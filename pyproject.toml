@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "phd-rl-algos"
+version = "0.1.0"
+description = "A collection of RL related algorithms"
+authors = ["mariusdgm <marius.dragomir.dgm@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+rl-envs-forge = "^1.4.1"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.1"
+pytest-cov = "^4.1.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
