@@ -74,7 +74,7 @@ def draw_terminal_state(grid_shape, terminal_state, ax):
     )
 
 
-def draw_gridworld(
+def draw_labyrinth_gridworld(
     grid_shape, walls, V, terminal_state, policy=None, enable_heatmap=True
 ):
     fig, ax = plt.subplots(figsize=(7, 7))
@@ -131,4 +131,62 @@ def draw_gridworld(
     ax.set_xticks([])
     ax.set_yticks([])
     plt.gca().invert_yaxis()
+    plt.show()
+
+
+def draw_simple_gridworld(
+    grid_shape, walls, V, terminal_states, policy=None, enable_heatmap=True
+):
+    fig, ax = plt.subplots(figsize=(7, 7))
+
+    if enable_heatmap:
+        values = list(V.values())
+        norm = mcolors.Normalize(vmin=min(values), vmax=max(values), clip=True)
+        cmap = plt.get_cmap("viridis")
+
+    for i in range(grid_shape[0] + 1):
+        ax.axhline(i, color="black", lw=1)
+        ax.axvline(i, color="black", lw=1)
+
+    for row in range(grid_shape[0]):
+        for col in range(grid_shape[1]):
+            state = (row, col)
+
+            if state in walls:  # Draw walls
+                ax.add_patch(
+                    plt.Rectangle(
+                        (col, grid_shape[0] - row - 1), 1, 1, fill=True, color="black"
+                    )
+                )
+                continue
+
+            color = "white"
+            if enable_heatmap and state in V:
+                color = cmap(norm(V[state]))
+                ax.add_patch(
+                    plt.Rectangle((col, grid_shape[0] - row - 1), 1, 1, color=color)
+                )
+
+            if policy and state in policy:  # Draw policy arrows
+                action = policy[state]
+                draw_arrow_in_cell(grid_shape, state, action, ax)
+
+            elif state in V:  # Add text for value
+                ax.text(
+                    col + 0.5,
+                    grid_shape[0] - row - 0.5,
+                    f"{V[state]:.2f}",
+                    ha="center",
+                    va="center",
+                    color="white" if color[:3] < (0.5, 0.5, 0.5) else "black",
+                )
+
+    # Draw terminal state markings
+    for terminal_state, _ in terminal_states.items():
+        draw_terminal_state(grid_shape, terminal_state, ax)
+
+    ax.set_xlim(0, grid_shape[1])
+    ax.set_ylim(0, grid_shape[0])
+    ax.set_xticks([])
+    ax.set_yticks([])
     plt.show()

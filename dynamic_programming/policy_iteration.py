@@ -138,3 +138,29 @@ def find_optimal_policy_q(t_r_dict, gamma=0.9, theta=1e-6):
         )
 
     return policy, Q
+
+### Stochastic case
+
+def policy_evaluation_q_stochastic(states, actions, policy, Q, t_r_dict, gamma, theta):
+    while True:
+        delta = 0
+        for state in states:
+            for action in actions:
+                old_q_value = Q[state][action]
+
+                next_state, reward, done = t_r_dict.get((state, action), (None, 0, True))
+                if next_state is None or done:
+                    Q[state][action] = reward
+                else:
+                    # Compute the expected Q value based on the stochastic policy
+                    Q[state][action] = sum(
+                        policy[state][a] * (reward + gamma * Q[next_state][a])
+                        for a in actions
+                    )
+
+                delta = max(delta, abs(old_q_value - Q[state][action]))
+
+        if delta < theta:
+            break
+
+    return Q
