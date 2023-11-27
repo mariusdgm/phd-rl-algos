@@ -1,5 +1,6 @@
 import numpy as np
 
+
 #### Policy iteration code for state (V) ####
 def policy_evaluation_v(states, policy, V, t_r_dict, gamma, theta):
     while True:
@@ -45,7 +46,6 @@ def policy_improvement_v(states, actions, policy, V, t_r_dict, gamma):
 
 
 def policy_iteration_v(t_r_dict, policy, V, states, actions, gamma=0.9, theta=1e-6):
-
     V = policy_evaluation_v(states, policy, V, t_r_dict, gamma, theta)
     policy, policy_stable = policy_improvement_v(
         states, actions, policy, V, t_r_dict, gamma
@@ -139,7 +139,9 @@ def find_optimal_policy_q(t_r_dict, gamma=0.9, theta=1e-6):
 
     return policy, Q
 
+
 ### Stochastic case
+
 
 def policy_evaluation_q_stochastic(states, actions, policy, Q, t_r_dict, gamma, theta):
     while True:
@@ -147,15 +149,16 @@ def policy_evaluation_q_stochastic(states, actions, policy, Q, t_r_dict, gamma, 
         for state in states:
             for action in actions:
                 old_q_value = Q[state][action]
+                next_state, reward, done = t_r_dict.get(
+                    (state, action), (None, 0, True)
+                )
 
-                next_state, reward, done = t_r_dict.get((state, action), (None, 0, True))
                 if next_state is None or done:
                     Q[state][action] = reward
                 else:
-                    # Compute the expected Q value based on the stochastic policy
-                    Q[state][action] = sum(
-                        policy[state][a] * (reward + gamma * Q[next_state][a])
-                        for a in actions
+                    # Sum over all possible actions in the next state
+                    Q[state][action] = reward + gamma * sum(
+                        policy[next_state][a] * Q[next_state][a] for a in actions
                     )
 
                 delta = max(delta, abs(old_q_value - Q[state][action]))
