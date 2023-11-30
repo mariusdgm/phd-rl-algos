@@ -268,14 +268,17 @@ def plot_car_rental_value_function(V, max_cars):
     ax.set_xticklabels(range(max_cars + 1))
     ax.set_yticklabels(reversed(range(max_cars + 1)))  # Reversed for correct orientation
 
+    # Adjust font size based on the number of cells
+    font_size = max(4, 30 / np.sqrt(max_cars))  # Decrease font size for larger grids
+
     # Loop over data dimensions and create text annotations.
     for i in range(max_cars + 1):
         for j in range(max_cars + 1):
             color = cmap(norm(value_grid[i, j]))
             text_color = get_text_color(color)
-            text = ax.text(j, i, f"{value_grid[i, j]:.2f}", ha="center", va="center", color=text_color)
+            formatted_value = f"{value_grid[i, j]:.1f}"  # One decimal place
+            text = ax.text(j, i, formatted_value, ha="center", va="center", color=text_color, fontsize=font_size)
 
     ax.set_title("State-Value Function (V) for Each State")
     fig.colorbar(im, ax=ax)
     plt.show()
-
