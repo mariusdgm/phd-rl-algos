@@ -1,6 +1,3 @@
-import numpy as np
-
-
 def create_random_policy(states, actions):
     num_actions = len(actions)
     action_prob = 1.0 / num_actions  # Uniform probability for each action
@@ -14,6 +11,7 @@ def create_random_policy(states, actions):
 
 def extract_V_from_Q(Q, states):
     return {state: max(Q[state].values()) for state in states}
+
 
 def extract_V_from_Q_for_stochastic_policy(Q, policy, states):
     V = {}
