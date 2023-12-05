@@ -27,7 +27,7 @@ def value_iteration_v(t_r_dict, states, actions, gamma=0.9, theta=1e-6):
         state: max(
             actions,
             key=lambda a: t_r_dict.get((state, a), (None, 0, True))[1]
-            + gamma * V.get(t_r_dict.get((state, a), (None, 0, True))[0], 0)
+            + gamma * V.get(t_r_dict.get((state, a), (None, 0, True))[0], 0),
         )
         for state in states
     }
@@ -64,7 +64,9 @@ def value_iteration_q(t_r_dict, states, actions, gamma=0.9, theta=1e-6):
 
     return policy, Q
 
+
 ### Stochastic case
+
 
 def value_iteration_v_stochastic(t_r_dict, states, actions, gamma=0.9, theta=1e-6):
     V = {state: 0 for state in states}
@@ -90,15 +92,20 @@ def value_iteration_v_stochastic(t_r_dict, states, actions, gamma=0.9, theta=1e-
         if delta < theta:
             break
 
-    # Policy derivation from the value function
+    # Policy derivation from the value function, preferring smaller actions in case of ties
     policy = {}
     for state in states:
-        action_values = {}
+        best_action = None
+        best_value = float('-inf')
         for action in actions:
-            action_values[action] = sum(
+            action_value = sum(
                 prob * (reward + gamma * V.get(next_state, 0))
                 for next_state, reward, _, prob in t_r_dict.get((state, action), {}).values()
             )
-        policy[state] = max(action_values, key=action_values.get)
+            # Update the best action if a higher value is found, or if the value is tied but the action is smaller
+            if action_value > best_value or (action_value == best_value and (best_action is None or action < best_action)):
+                best_value = action_value
+                best_action = action
+        policy[state] = best_action
 
     return policy, V
