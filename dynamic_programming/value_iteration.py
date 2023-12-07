@@ -78,32 +78,37 @@ def value_iteration_v_stochastic(t_r_dict, states, actions, gamma=0.9, theta=1e-
         delta = 0
         for state in states:
             v = V[state]
-            action_values = []
 
+            # One step lookahead to find the best action value
+            values = []
             for action in actions:
-                if (state, action) in t_r_dict:
-                    win_state, lose_state, reward = t_r_dict[(state, action)]
+                outcomes = t_r_dict.get((state, action), {})
+                value_action = sum(
+                    prob * (reward + gamma * V.get(next_state, 0))
+                    for next_state, reward, _, prob in outcomes.values()
+                )
+                values.append(value_action)
 
-                    # Assuming uniform probability for win and lose
-                    win_prob = 0.5
-                    lose_prob = 0.5
-
-                    # Calculate expected value for the action
-                    expected_value = win_prob * (reward + gamma * V.get(win_state, 0)) + \
-                                     lose_prob * (gamma * V.get(lose_state, 0))
-                    action_values.append(expected_value)
-
-            V[state] = max(action_values, default=0)
+            V[state] = max(values)
             delta = max(delta, abs(v - V[state]))
 
         if delta < theta:
             break
 
-    # Derive policy from the value function
-    policy = {state: actions[np.argmax(
-                [0.5 * (t_r_dict.get((state, a), (0, 0, 0))[2] + gamma * V.get(t_r_dict.get((state, a), (0, 0, 0))[0], 0)) +
-                 0.5 * (gamma * V.get(t_r_dict.get((state, a), (0, 0, 0))[1], 0)) 
-                 for a in actions], default=0)] 
-              for state in states}
+    # Policy derivation from the value function, preferring smaller actions in case of ties
+    policy = {}
+    for state in states:
+        best_action = None
+        best_value = float('-inf')
+        for action in actions:
+            action_value = sum(
+                prob * (reward + gamma * V.get(next_state, 0))
+                for next_state, reward, _, prob in t_r_dict.get((state, action), {}).values()
+            )
+            # Update the best action if a higher value is found, or if the value is tied but the action is smaller
+            if action_value > best_value or (action_value == best_value and (best_action is None or action < best_action)):
+                best_value = action_value
+                best_action = action
+        policy[state] = best_action
 
     return policy, V
