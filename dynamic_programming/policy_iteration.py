@@ -224,13 +224,12 @@ def policy_improvement_q_stochastic(states, actions, policy, Q):
     new_policy = {}
     policy_stable = True
     for state in states:
-        current_action = policy[state]
-        action_values = {action: Q[state][action] for action in actions}
-        best_action = max(action_values, key=action_values.get)
-
-        new_policy[state] = best_action
-        if current_action != best_action:
+        best_action = max(Q[state], key=Q[state].get)
+        if policy[state] != best_action:
             policy_stable = False
+            new_policy[state] = best_action
+        else:
+            new_policy[state] = policy[state]
 
     return new_policy, policy_stable
 
@@ -263,12 +262,19 @@ def policy_evaluation_q_stochastic(states, actions, policy, Q, t_r_dict, gamma, 
         for state in states:
             for action in actions:
                 old_q_value = Q[state][action]
-                Q[state][action] = sum(
-                    prob * (reward + gamma * Q[next_state][policy[next_state]])
-                    for next_state, reward, done, prob in t_r_dict[(state, action)]
-                    if not done
-                )
+                transitions = t_r_dict.get((state, action), [])
+                q_value_sum = 0
+
+                for next_state, reward, done, prob in transitions:
+                    if done:
+                        q_value_sum += prob * reward  # Directly use the reward if it's a terminal state
+                    else:
+                        # Use the value of the next state under the current policy, if not terminal
+                        q_value_sum += prob * (reward + gamma * Q[next_state][policy[next_state]])
+                
+                Q[state][action] = q_value_sum
                 delta = max(delta, abs(old_q_value - Q[state][action]))
+
         if delta < theta:
             break
     return Q
