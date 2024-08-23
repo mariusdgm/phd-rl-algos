@@ -179,12 +179,14 @@ def run_experiment(env, num_steps, M, Q, sample_time, strategy='brute_force', ca
         num_steps (int): Total number of steps in the simulation.
         M (int): Number of campaigns.
         Q (int): Total budget.
-        delta_t (float): Time step of the simulation.
+        sample_time (float): Time step of the simulation.
         strategy (str): The strategy to use for budget allocation ('brute_force' or 'dp').
         campaign_length (float): The length of each campaign in continuous time.
 
     Returns:
         np.ndarray: The opinions over time.
+        list: Budget distribution across campaigns.
+        list: Nodes affected in each campaign.
     """
     # Compute the optimal budget allocation using the selected strategy
     if strategy == 'brute_force':
@@ -204,6 +206,10 @@ def run_experiment(env, num_steps, M, Q, sample_time, strategy='brute_force', ca
 
     # Initialize an array to store opinions over time
     opinions_over_time = np.zeros((num_steps, env.num_agents))
+    
+    # Lists to store budget distribution and affected nodes
+    budget_distribution = []
+    affected_nodes = []
 
     # Run the simulation
     for i in range(num_steps):
@@ -211,11 +217,16 @@ def run_experiment(env, num_steps, M, Q, sample_time, strategy='brute_force', ca
             # Apply the optimal control for N consecutive steps
             current_budget = optimal_budget_allocation[0]
             optimal_budget_allocation = optimal_budget_allocation[1:]
+            affected_nodes_in_campaign = []
             for j in range(N):
                 if i + j < num_steps:
                     optimal_u = optimal_control_action(env, budget=current_budget)
                     opinions, reward, done, truncated, info = env.step(optimal_u)
                     opinions_over_time[i + j] = opinions
+                    # Track affected nodes (non-zero actions)
+                    affected_nodes_in_campaign = list(np.where(optimal_u > 0)[0])
+            budget_distribution.append(current_budget)
+            affected_nodes.append(affected_nodes_in_campaign)
             # Skip the next N-1 steps as they are already processed
             i += N - 1
         else:
@@ -224,8 +235,70 @@ def run_experiment(env, num_steps, M, Q, sample_time, strategy='brute_force', ca
             opinions, reward, done, truncated, info = env.step(optimal_u)
             opinions_over_time[i] = opinions
 
-    return opinions_over_time
+    return opinions_over_time, budget_distribution, affected_nodes
 
+def run_broadcast_strategy(env, num_steps, broadcast_duration):
+    """
+    Run the experiment using the broadcast strategy (spending the entire budget at the initial time).
+
+    Args:
+        env (NetworkGraph): The NetworkGraph environment.
+        num_steps (int): Total number of steps in the simulation.
+        broadcast_duration (int): Number of steps over which to apply the maximum control input.
+
+    Returns:
+        np.ndarray: The opinions over time.
+        list: Budget distribution across campaigns (single campaign).
+        list: Nodes affected in each campaign (single campaign).
+    """
+    # Initialize an array to store opinions over time
+    opinions_over_time = np.zeros((num_steps, env.num_agents))
+
+    # Lists to store budget distribution and affected nodes
+    budget_distribution = []
+    affected_nodes = []
+
+    # Apply the broadcast strategy: apply maximum control to all agents for the broadcast duration
+    for i in range(broadcast_duration):
+        if i < num_steps:
+            max_u = np.full(env.num_agents, env.max_u)  # Apply maximum control to all agents
+            opinions, reward, done, truncated, info = env.step(max_u)
+            opinions_over_time[i] = opinions
+            # Track affected nodes
+            affected_nodes.append(list(np.where(max_u > 0)[0]))
+            budget_distribution.append(env.max_u * env.num_agents)  # Total budget per step
+
+    # Run the rest of the simulation with no control input
+    for i in range(broadcast_duration, num_steps):
+        no_action_u = np.zeros(env.num_agents)  # No control input
+        opinions, reward, done, truncated, info = env.step(no_action_u)
+        opinions_over_time[i] = opinions
+
+    return opinions_over_time, budget_distribution, affected_nodes
+
+def plot_budget_distribution(budget_distribution, affected_nodes):
+    """
+    Plot the budget distribution across campaigns with annotations for affected nodes.
+
+    Args:
+        budget_distribution (list): The budget allocated in each campaign.
+        affected_nodes (list): The nodes affected in each campaign.
+    """
+    num_campaigns = len(budget_distribution)
+    
+    plt.figure(figsize=(12, 6))
+    bars = plt.bar(range(num_campaigns), budget_distribution, color='skyblue')
+    
+    plt.xlabel('Campaign Number')
+    plt.ylabel('Budget Allocated')
+    plt.title('Budget Distribution Across Campaigns with Affected Nodes')
+    
+    for i, bar in enumerate(bars):
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width() / 2.0, height, ', '.join(map(str, affected_nodes[i])), 
+                 ha='center', va='bottom', fontsize=10, rotation=90)
+    
+    plt.show()
 def compute_overall_error(opinions_over_time, desired_opinion):
     """
     Compute the overall error from the desired opinion over time.
@@ -286,17 +359,15 @@ def run_uncontrolled_experiment(env, num_steps):
 
     return opinions_over_time
 
-def run_broadcast_strategy(env, num_steps, Q, M, sample_time, campaign_length=0.5):
+def run_broadcast_strategy(env, num_steps, broadcast_duration):
     """
-    Run the experiment using the broadcast strategy (spending entire budget at the initial time).
+    Run the experiment using the broadcast strategy (spending the entire budget at the initial time).
 
     Args:
         env (NetworkGraph): The NetworkGraph environment.
         num_steps (int): Total number of steps in the simulation.
         Q (int): Total budget.
-        M (int): Number of campaigns (used to determine the impulse duration).
-        delta_t (float): Time step of the simulation.
-        campaign_length (float): The length of each campaign in continuous time.
+        broadcast_duration (int): Number of steps over which to apply the maximum control input.
 
     Returns:
         np.ndarray: The opinions over time.
@@ -304,23 +375,17 @@ def run_broadcast_strategy(env, num_steps, Q, M, sample_time, campaign_length=0.
     # Initialize an array to store opinions over time
     opinions_over_time = np.zeros((num_steps, env.num_agents))
 
-    # Determine the impulse duration by multiplying the number of campaigns with the campaign length
-    impulse_duration = int(campaign_length / sample_time) * M
-    
-    # Calculate the amount of budget to apply each step during the impulse
-    budget_per_step = Q / impulse_duration
-
-    # Apply the broadcast strategy: spend the entire budget over the impulse duration
-    for i in range(impulse_duration):
+    # Apply the broadcast strategy: apply maximum control to all agents for the broadcast duration
+    for i in range(broadcast_duration):
         if i < num_steps:
-            optimal_u = optimal_control_action(env, budget=budget_per_step)
-            opinions, reward, done, truncated, info = env.step(optimal_u)
+            max_u = np.full(env.num_agents, env.max_u)  # Apply maximum control to all agents
+            opinions, reward, done, truncated, info = env.step(max_u)
             opinions_over_time[i] = opinions
 
     # Run the rest of the simulation with no control input
-    for i in range(impulse_duration, num_steps):
-        optimal_u = np.zeros(env.num_agents)
-        opinions, reward, done, truncated, info = env.step(optimal_u)
+    for i in range(broadcast_duration, num_steps):
+        no_action_u = np.zeros(env.num_agents)  # No control input
+        opinions, reward, done, truncated, info = env.step(no_action_u)
         opinions_over_time[i] = opinions
 
     return opinions_over_time
