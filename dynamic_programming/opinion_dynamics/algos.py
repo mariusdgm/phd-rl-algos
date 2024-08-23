@@ -169,3 +169,158 @@ def brute_force_strategy(env, M, Q):
             best_allocation = allocation
     
     return np.array(best_allocation)
+
+def run_experiment(env, num_steps, M, Q, sample_time, strategy='brute_force', campaign_length=0.5):
+    """
+    Run the experiment to apply the computed campaign budgets and observe the opinions over time.
+
+    Args:
+        env (NetworkGraph): The NetworkGraph environment.
+        num_steps (int): Total number of steps in the simulation.
+        M (int): Number of campaigns.
+        Q (int): Total budget.
+        delta_t (float): Time step of the simulation.
+        strategy (str): The strategy to use for budget allocation ('brute_force' or 'dp').
+        campaign_length (float): The length of each campaign in continuous time.
+
+    Returns:
+        np.ndarray: The opinions over time.
+    """
+    # Compute the optimal budget allocation using the selected strategy
+    if strategy == 'brute_force':
+        optimal_budget_allocation = brute_force_strategy(env, M, Q)
+    elif strategy == 'dp':
+        optimal_budget_allocation = dynamic_programming_strategy(env, M, Q)
+    else:
+        raise ValueError("Invalid strategy selected. Choose 'brute_force' or 'dp'.")
+    
+    print(f"Optimal budget allocation ({strategy}):", optimal_budget_allocation)
+
+    # Determine the number of steps for the given campaign length
+    N = int(campaign_length / sample_time)  # Number of consecutive steps to apply optimal control
+    
+    # Compute the interval between campaigns (equidistantly spread)
+    k = int((num_steps - M * N) / (M + 1))
+
+    # Initialize an array to store opinions over time
+    opinions_over_time = np.zeros((num_steps, env.num_agents))
+
+    # Run the simulation
+    for i in range(num_steps):
+        if i % k == 0 and len(optimal_budget_allocation) > 0:
+            # Apply the optimal control for N consecutive steps
+            current_budget = optimal_budget_allocation[0]
+            optimal_budget_allocation = optimal_budget_allocation[1:]
+            for j in range(N):
+                if i + j < num_steps:
+                    optimal_u = optimal_control_action(env, budget=current_budget)
+                    opinions, reward, done, truncated, info = env.step(optimal_u)
+                    opinions_over_time[i + j] = opinions
+            # Skip the next N-1 steps as they are already processed
+            i += N - 1
+        else:
+            # Apply zero control input at other steps
+            optimal_u = np.zeros(env.num_agents)
+            opinions, reward, done, truncated, info = env.step(optimal_u)
+            opinions_over_time[i] = opinions
+
+    return opinions_over_time
+
+def compute_overall_error(opinions_over_time, desired_opinion):
+    """
+    Compute the overall error from the desired opinion over time.
+
+    Args:
+        opinions_over_time (np.ndarray): Array of opinions over time.
+        desired_opinion (float): The desired opinion value.
+
+    Returns:
+        float: The overall error.
+    """
+    # Compute the absolute error from the desired opinion at each time step
+    errors = np.abs(opinions_over_time - desired_opinion)
+    
+    # Sum the errors across all agents and time steps
+    overall_error = np.sum(errors)
+    
+    return overall_error
+
+def compute_final_error(opinions_over_time, desired_opinion):
+    """
+    Compute the final error from the desired opinion at the last time step.
+
+    Args:
+        opinions_over_time (np.ndarray): Array of opinions over time.
+        desired_opinion (float): The desired opinion value.
+
+    Returns:
+        float: The final error.
+    """
+    # Get the opinions at the final time step
+    final_opinions = opinions_over_time[-1]
+    
+    # Compute the absolute error from the desired opinion
+    final_error = np.sum(np.abs(final_opinions - desired_opinion))
+    
+    return final_error
+
+def run_uncontrolled_experiment(env, num_steps):
+    """
+    Run the experiment with no control (uncontrolled case).
+
+    Args:
+        env (NetworkGraph): The NetworkGraph environment.
+        num_steps (int): Total number of steps in the simulation.
+
+    Returns:
+        np.ndarray: The opinions over time.
+    """
+    # Initialize an array to store opinions over time
+    opinions_over_time = np.zeros((num_steps, env.num_agents))
+
+    # Run the simulation with no control input
+    for i in range(num_steps):
+        optimal_u = np.zeros(env.num_agents)
+        opinions, reward, done, truncated, info = env.step(optimal_u)
+        opinions_over_time[i] = opinions
+
+    return opinions_over_time
+
+def run_broadcast_strategy(env, num_steps, Q, M, sample_time, campaign_length=0.5):
+    """
+    Run the experiment using the broadcast strategy (spending entire budget at the initial time).
+
+    Args:
+        env (NetworkGraph): The NetworkGraph environment.
+        num_steps (int): Total number of steps in the simulation.
+        Q (int): Total budget.
+        M (int): Number of campaigns (used to determine the impulse duration).
+        delta_t (float): Time step of the simulation.
+        campaign_length (float): The length of each campaign in continuous time.
+
+    Returns:
+        np.ndarray: The opinions over time.
+    """
+    # Initialize an array to store opinions over time
+    opinions_over_time = np.zeros((num_steps, env.num_agents))
+
+    # Determine the impulse duration by multiplying the number of campaigns with the campaign length
+    impulse_duration = int(campaign_length / sample_time) * M
+    
+    # Calculate the amount of budget to apply each step during the impulse
+    budget_per_step = Q / impulse_duration
+
+    # Apply the broadcast strategy: spend the entire budget over the impulse duration
+    for i in range(impulse_duration):
+        if i < num_steps:
+            optimal_u = optimal_control_action(env, budget=budget_per_step)
+            opinions, reward, done, truncated, info = env.step(optimal_u)
+            opinions_over_time[i] = opinions
+
+    # Run the rest of the simulation with no control input
+    for i in range(impulse_duration, num_steps):
+        optimal_u = np.zeros(env.num_agents)
+        opinions, reward, done, truncated, info = env.step(optimal_u)
+        opinions_over_time[i] = opinions
+
+    return opinions_over_time
