@@ -64,79 +64,166 @@ def optimal_control_action(env, total_budget):
     return u, remaining_budget
 
 
-def dynamic_programming_strategy(env, M, Q):
+def dynamic_programming_strategy(env, M, Q, action_duration, step_duration):
     """
     Implement the dynamic programming algorithm to determine the optimal budget allocation across campaigns.
 
     Args:
         env (NetworkGraph): The NetworkGraph environment.
         M (int): The number of campaigns.
-        Q (int): The total budget.
+        Q (int): The total budget (number of units of max_u).
+        action_duration (float): Duration over which the action is applied in each campaign.
+        step_duration (float): Total duration of each campaign.
 
     Returns:
-        np.ndarray: The optimal budget allocation for each campaign.
+        list: The optimal budget allocation for each campaign.
     """
     N = env.num_agents  # Number of agents
     ubar = env.max_u  # Maximum control input
-    v_rho = env.centralities  # Influence vector (precomputed centralities)
-    x_t0 = env.opinions  # Initial opinions
     d = env.desired_opinion  # Desired opinion
 
-    # Function f0(b0) for the first campaign
-    def f0(b0, v_rho, x_t0, d, ubar):
-        term1 = np.sum(v_rho[:b0] * (1 - ubar) * np.abs(x_t0[:b0] - d))
-        term2 = np.sum(v_rho[b0:] * np.abs(x_t0[b0:] - d))
-        return term1 + term2
+    # Discretize the opinion space
+    nx = 10  # Number of discretization points per agent
+    opinion_grid = np.linspace(0, 1, nx)
 
-    # Function f(b) for subsequent campaigns
-    def f(b, v_rho, ubar):
-        return 1 - ubar * np.sum(v_rho[:b])
+    # Initialize the value function V[k][state][remaining_budget]
+    V = [{} for _ in range(M + 1)]  # V[M] is the value function at the final stage
 
-    # Initialize the value function Vk
-    V = np.zeros((M + 1, Q + 1))  # V[k, r] represents Vk(rk)
+    # Compute the terminal cost at the final campaign (stage M)
+    # For each possible state (opinions of agents) and remaining budget
+    # Since the state space is large (opinions of all agents), we can consider the average opinion or some aggregated measure
+    # For simplicity, we'll use the average opinion
 
-    # Base case: the last campaign
-    for r in range(Q + 1):
-        V[M, r] = np.log(f(r, v_rho, ubar))
+    # Terminal cost
+    for avg_opinion in opinion_grid:
+        V[M][(avg_opinion, 0)] = np.abs(avg_opinion - d)
 
-    # Backward pass for intermediate campaigns
+    # Backward induction
     for k in range(M - 1, -1, -1):
-        for r in range(Q + 1):
-            V[k, r] = np.min(
-                [
-                    np.log(f(b, v_rho, ubar)) + V[k + 1, r - b]
-                    for b in range(min(N, r) + 1)
-                ]
+        print(f"Processing campaign {k}")
+        V_k = V[k]
+        V_k_plus_1 = V[k + 1]
+        for avg_opinion in opinion_grid:
+            for rem_budget in range(Q + 1):
+                min_cost = float("inf")
+                best_b = None
+                best_next_state = None
+
+                # Consider all possible budget allocations at this stage
+                for b in range(
+                    0, min(rem_budget, N) + 1
+                ):  # b is the number of agents to control
+                    # Simulate the effect of controlling 'b' agents
+                    # Select 'b' most influential agents based on centralities and current opinions
+
+                    # Create a temporary environment to simulate the step
+                    temp_env = deepcopy(env)
+                    temp_env.opinions = np.full(N, avg_opinion)
+
+                    # Determine which agents to control
+                    # Calculate influence power for each agent
+                    influence_powers = temp_env.centralities * np.abs(
+                        d - temp_env.opinions
+                    )
+                    sorted_indices = np.argsort(influence_powers)[::-1]
+
+                    # Initialize control inputs
+                    u = np.zeros(N)
+                    indices_to_control = sorted_indices[:b]
+                    u[indices_to_control] = ubar  # Apply maximum control input
+
+                    # Simulate the step
+                    opinions_after_step, _, _, _, _ = temp_env.step(
+                        action=u,
+                        action_duration=action_duration,
+                        step_duration=step_duration,
+                    )
+
+                    # Compute the new average opinion
+                    avg_opinion_next = np.mean(opinions_after_step)
+
+                    # Round to nearest grid point
+                    avg_opinion_next = min(
+                        opinion_grid, key=lambda x: abs(x - avg_opinion_next)
+                    )
+
+                    # Remaining budget
+                    rem_budget_next = rem_budget - b
+
+                    # Immediate cost (control cost + deviation from desired opinion)
+                    control_cost = 0.01 * np.sum(
+                        u
+                    )  # Assuming a small cost per unit of control
+                    deviation_cost = np.abs(avg_opinion_next - d)
+                    total_cost = control_cost + deviation_cost
+
+                    # Total cost-to-go
+                    future_cost = V_k_plus_1.get(
+                        (avg_opinion_next, rem_budget_next), float("inf")
+                    )
+                    cost_to_go = total_cost + future_cost
+
+                    if cost_to_go < min_cost:
+                        min_cost = cost_to_go
+                        best_b = b
+                        best_next_state = (avg_opinion_next, rem_budget_next)
+
+                # Store the minimum cost and best action
+                V_k[(avg_opinion, rem_budget)] = min_cost
+
+    # Extract the optimal policy
+    # Start from the initial average opinion
+    avg_opinion = np.mean(env.opinions)
+    avg_opinion = min(opinion_grid, key=lambda x: abs(x - avg_opinion))
+    rem_budget = Q
+    optimal_budget_allocation = []
+
+    for k in range(M):
+        min_cost = float("inf")
+        best_b = None
+        best_next_state = None
+
+        for b in range(0, min(rem_budget, N) + 1):
+            # Simulate the effect of controlling 'b' agents
+            temp_env = deepcopy(env)
+            temp_env.opinions = np.full(N, avg_opinion)
+
+            influence_powers = temp_env.centralities * np.abs(d - temp_env.opinions)
+            sorted_indices = np.argsort(influence_powers)[::-1]
+
+            u = np.zeros(N)
+            indices_to_control = sorted_indices[:b]
+            u[indices_to_control] = ubar
+
+            opinions_after_step, _, _, _, _ = temp_env.step(
+                action=u, action_duration=action_duration, step_duration=step_duration
             )
 
-    # Initial campaign calculation
-    V0 = np.min(
-        [
-            np.log(f0(b0, v_rho, x_t0, d, ubar)) + V[1, Q - b0]
-            for b0 in range(min(N, Q) + 1)
-        ]
-    )
+            avg_opinion_next = np.mean(opinions_after_step)
+            avg_opinion_next = min(
+                opinion_grid, key=lambda x: abs(x - avg_opinion_next)
+            )
+            rem_budget_next = rem_budget - b
 
-    # Forward pass to find the optimal budget allocations
-    b_star = np.zeros(M + 1, dtype=int)
-    b_star[0] = np.argmin(
-        [
-            np.log(f0(b0, v_rho, x_t0, d, ubar)) + V[1, Q - b0]
-            for b0 in range(min(N, Q) + 1)
-        ]
-    )
+            control_cost = 0.01 * np.sum(u)
+            deviation_cost = np.abs(avg_opinion_next - d)
+            total_cost = control_cost + deviation_cost
 
-    for k in range(1, M):
-        b_star[k] = np.argmin(
-            [
-                np.log(f(b, v_rho, ubar)) + V[k + 1, Q - np.sum(b_star[:k]) - b]
-                for b in range(min(N, Q - np.sum(b_star[:k])) + 1)
-            ]
-        )
+            future_cost = V[k + 1].get(
+                (avg_opinion_next, rem_budget_next), float("inf")
+            )
+            cost_to_go = total_cost + future_cost
 
-    b_star[M] = Q - np.sum(b_star[:M])
+            if cost_to_go < min_cost:
+                min_cost = cost_to_go
+                best_b = b
+                best_next_state = (avg_opinion_next, rem_budget_next)
 
-    return b_star
+        # Record the best action
+        optimal_budget_allocation.append(best_b)
+        avg_opinion, rem_budget = best_next_state
+
+    return optimal_budget_allocation
 
 
 def brute_force_strategy(env, M, Q):
