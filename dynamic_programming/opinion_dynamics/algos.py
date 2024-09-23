@@ -1,6 +1,7 @@
 import numpy as np
 from itertools import product
 import matplotlib.pyplot as plt
+from copy import deepcopy
 
 
 def plot_opinions_over_time(opinions_over_time):
@@ -495,3 +496,77 @@ def run_broadcast_strategy(env, total_budget, experiment_steps):
         opinions_over_time[i] = opinions
 
     return opinions_over_time, budget_distribution, affected_nodes
+
+
+def run_campaign_with_sampling(
+    env, total_budget, action_duration, step_duration, sampling_time
+):
+    """
+    Run the experiment applying a control action over a specified action duration,
+    propagating the dynamics over a total step duration, and recording the opinions
+    at specified sampling intervals, using the environment's step function.
+
+    Args:
+        env (NetworkGraph): The NetworkGraph environment.
+        total_budget (int): The total number of units of u_max to spend in this campaign.
+        action_duration (float): Duration over which the action is applied.
+        step_duration (float): Total duration over which the opinions are propagated.
+        sampling_time (float): Time interval at which to sample the opinions.
+
+    Returns:
+        np.ndarray: The opinions over time at the specified sampling intervals.
+        np.ndarray: The corresponding time points.
+        list: Budget distribution across campaigns.
+        list: Nodes affected in each campaign.
+    """
+    # Validate durations
+    if action_duration < 0 or step_duration <= 0 or sampling_time <= 0:
+        raise ValueError("Durations must be positive values.")
+    if action_duration > step_duration:
+        raise ValueError("action_duration cannot be greater than step_duration.")
+
+    # Initialize lists to store opinions over time, budget distribution, and affected nodes
+    num_samples = int(np.ceil(step_duration / sampling_time)) + 1  # +1 to include t=0
+    opinions_over_time = np.zeros((num_samples, env.num_agents))
+    time_points = np.linspace(0, step_duration, num_samples)
+
+    # Record initial opinions
+    opinions_over_time[0] = env.opinions.copy()
+
+    # Determine the control action
+    optimal_action, remaining_budget = optimal_control_action(env, total_budget)
+
+    # Track affected nodes and budget
+    affected_nodes = [list(np.where(optimal_action > 0)[0])]
+    budget_distribution = [np.sum(optimal_action)]
+
+    # Initialize time
+    current_time = 0.0
+    idx = 1  # Index for opinions_over_time
+    while current_time < step_duration and idx < num_samples:
+        # Determine the duration for this step
+        dt = min(sampling_time, step_duration - current_time)
+
+        # Determine if action should be applied
+        if current_time < action_duration:
+            # Apply control action
+            action = optimal_action
+            action_duration_step = min(dt, action_duration - current_time)
+        else:
+            # No control action
+            action = np.zeros(env.num_agents)
+            action_duration_step = 0.0  # No action applied
+
+        # Step the environment
+        opinions, reward, done, truncated, info = env.step(
+            action=action, action_duration=action_duration_step, step_duration=dt
+        )
+
+        # Record the opinions
+        opinions_over_time[idx] = opinions.copy()
+
+        # Update time and index
+        current_time += dt
+        idx += 1
+
+    return opinions_over_time, time_points, budget_distribution, affected_nodes
