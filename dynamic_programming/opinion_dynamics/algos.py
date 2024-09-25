@@ -2,29 +2,34 @@ import numpy as np
 from itertools import product
 import matplotlib.pyplot as plt
 from copy import deepcopy
+from scipy.linalg import expm
 
 
-def plot_opinions_over_time(opinions_over_time):
+def plot_opinions_over_time(opinions_over_time, time_points=None):
     """
     Plot the opinions of each agent over time.
 
     Args:
         opinions_over_time (np.ndarray): Array of shape (num_steps, num_agents) containing the opinions at each time step.
+        time_points (np.ndarray, optional): Array of time points corresponding to each sample.
+                                            If None, time steps are used as the x-axis.
     """
-    num_agents = opinions_over_time.shape[
-        1
-    ]  # Infer the number of agents from the array shape
+    num_agents = opinions_over_time.shape[1]  # Infer the number of agents from the array shape
+
+    if time_points is None:
+        # Use time steps as the x-axis
+        time_points = np.arange(opinions_over_time.shape[0])
 
     # Plot the opinions over time for each agent
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(12, 6))
     for agent_idx in range(num_agents):
-        plt.plot(opinions_over_time[:, agent_idx], label=f"Agent {agent_idx}")
+        plt.plot(time_points, opinions_over_time[:, agent_idx], label=f"Agent {agent_idx}")
 
-    plt.xlabel("Time Steps")
+    plt.xlabel("Time" if time_points is not None else "Time Steps")
     plt.ylabel("Opinion")
     plt.title("Opinion Convergence Over Time")
-    # plt.legend()
     plt.grid(True)
+    plt.tight_layout()
     plt.show()
 
 
@@ -227,135 +232,84 @@ def dynamic_programming_strategy(env, M, Q, action_duration, step_duration):
     return optimal_budget_allocation
 
 
-def brute_force_strategy(env, M, Q):
-    """
-    Implement the brute force algorithm to determine the optimal budget allocation across campaigns.
-
-    Args:
-        env (NetworkGraph): The NetworkGraph environment.
-        M (int): The number of campaigns.
-        Q (int): The total budget.
-
-    Returns:
-        np.ndarray: The optimal budget allocation for each campaign.
-    """
-    N = env.num_agents  # Number of agents
-    ubar = env.max_u  # Maximum control input
-    v_rho = env.centralities  # Influence vector (precomputed centralities)
-    d = env.desired_opinion  # Desired opinion
-    initial_opinions = env.opinions.copy()  # Save the initial opinions
-
-    def simulate_dynamics(b_allocation):
-        """Simulate the dynamics for a given budget allocation."""
-        opinions = initial_opinions.copy()
-
-        for k, b_k in enumerate(b_allocation):
-            # Allocate the budget using the optimal control strategy for each campaign
-            u = optimal_control_action(env, budget=b_k)
-            opinions = u * d + (1 - u) * opinions
-            # Apply the network influence (evolution dynamics between campaigns)
-            opinions += env.tau * (-env.L @ opinions)
-            opinions = np.clip(opinions, 0, 1)  # Ensure opinions remain within [0, 1]
-
-        return opinions
-
-    def compute_cost(final_opinions):
-        """Compute the cost as the mean deviation from the desired opinion."""
-        return np.mean(np.abs(final_opinions - d))
-
-    # Generate all possible budget allocations
-    possible_budgets = list(range(min(N, Q) + 1))
-    all_allocations = list(product(possible_budgets, repeat=M + 1))
-
-    # Filter allocations to ensure the total budget does not exceed Q
-    valid_allocations = [alloc for alloc in all_allocations if sum(alloc) <= Q]
-
-    # Initialize best cost and allocation
-    best_cost = float("inf")
-    best_allocation = None
-
-    # Brute force search
-    for allocation in valid_allocations:
-        final_opinions = simulate_dynamics(allocation)
-        cost = compute_cost(final_opinions)
-
-        if cost < best_cost:
-            best_cost = cost
-            best_allocation = allocation
-
-    return np.array(best_allocation)
-
-
-def run_experiment(
-    env, num_steps, M, Q, sample_time, strategy="brute_force", campaign_length=0.5
+def run_dynamic_programming_campaigns(
+    env,
+    optimal_budget_allocation,
+    action_duration,
+    step_duration,
+    sampling_time,
+    final_campaign_step_duration=None,
+    final_campaign_sampling_time=None,
 ):
     """
-    Run the experiment to apply the computed campaign budgets and observe the opinions over time.
+    Run the campaigns using the optimal budget allocation from dynamic programming,
+    applying the allocated budget in each campaign, and collecting opinions over time.
+    Allows the final campaign to have a different step_duration and sampling_time.
 
     Args:
         env (NetworkGraph): The NetworkGraph environment.
-        num_steps (int): Total number of steps in the simulation.
-        M (int): Number of campaigns.
-        Q (int): Total budget.
-        sample_time (float): Time step of the simulation.
-        strategy (str): The strategy to use for budget allocation ('brute_force' or 'dp').
-        campaign_length (float): The length of each campaign in continuous time.
+        optimal_budget_allocation (list): The budget allocation for each campaign.
+        action_duration (float): Duration over which the action is applied in each campaign.
+        step_duration (float): Total duration of each campaign.
+        sampling_time (float): Time interval at which to sample the opinions.
+        final_campaign_step_duration (float, optional): Step duration for the final campaign.
+        final_campaign_sampling_time (float, optional): Sampling time for the final campaign.
 
     Returns:
         np.ndarray: The opinions over time.
-        list: Budget distribution across campaigns.
-        list: Nodes affected in each campaign.
+        np.ndarray: The time points corresponding to the opinions.
     """
-    # Compute the optimal budget allocation using the selected strategy
-    if strategy == "brute_force":
-        optimal_budget_allocation = brute_force_strategy(env, M, Q)
-    elif strategy == "dp":
-        optimal_budget_allocation = dynamic_programming_strategy(env, M, Q)
-    else:
-        raise ValueError("Invalid strategy selected. Choose 'brute_force' or 'dp'.")
+    M = len(optimal_budget_allocation)  # Number of campaigns
+    opinions_over_time = []
+    time_points = []
+    current_time = 0.0
 
-    print(f"Optimal budget allocation ({strategy}):", optimal_budget_allocation)
+    for k in range(M):
+        print(f"Running campaign {k + 1}/{M}")
+        # Determine the budget for this campaign
+        budget_k = optimal_budget_allocation[k]
 
-    # Determine the number of steps for the given campaign length
-    N = int(
-        campaign_length / sample_time
-    )  # Number of consecutive steps to apply optimal control
-
-    # Compute the interval between campaigns (equidistantly spread)
-    k = int((num_steps - M * N) / (M + 1))
-
-    # Initialize an array to store opinions over time
-    opinions_over_time = np.zeros((num_steps, env.num_agents))
-
-    # Lists to store budget distribution and affected nodes
-    budget_distribution = []
-    affected_nodes = []
-
-    # Run the simulation
-    for i in range(num_steps):
-        if i % k == 0 and len(optimal_budget_allocation) > 0:
-            # Apply the optimal control for N consecutive steps
-            current_budget = optimal_budget_allocation[0]
-            optimal_budget_allocation = optimal_budget_allocation[1:]
-            affected_nodes_in_campaign = []
-            for j in range(N):
-                if i + j < num_steps:
-                    optimal_u = optimal_control_action(env, budget=current_budget)
-                    opinions, reward, done, truncated, info = env.step(optimal_u)
-                    opinions_over_time[i + j] = opinions
-                    # Track affected nodes (non-zero actions)
-                    affected_nodes_in_campaign = list(np.where(optimal_u > 0)[0])
-            budget_distribution.append(current_budget)
-            affected_nodes.append(affected_nodes_in_campaign)
-            # Skip the next N-1 steps as they are already processed
-            i += N - 1
+        # If there is no budget left, we can skip applying control
+        if budget_k == 0:
+            action = np.zeros(env.num_agents)
         else:
-            # Apply zero control input at other steps
-            optimal_u = np.zeros(env.num_agents)
-            opinions, reward, done, truncated, info = env.step(optimal_u)
-            opinions_over_time[i] = opinions
+            # Determine the control action using the allocated budget
+            action, _ = optimal_control_action(env, budget_k)
 
-    return opinions_over_time, budget_distribution, affected_nodes
+        # Determine the step_duration and sampling_time for this campaign
+        if k == M - 1 and final_campaign_step_duration is not None:
+            # Use the specified step_duration and sampling_time for the final campaign
+            campaign_step_duration = final_campaign_step_duration
+            campaign_sampling_time = final_campaign_sampling_time or sampling_time
+        else:
+            # Use the default step_duration and sampling_time
+            campaign_step_duration = step_duration
+            campaign_sampling_time = sampling_time
+
+        # Run the campaign with sampling
+        opinions_campaign, times_campaign = run_campaign_with_sampling(
+            env,
+            action=action,
+            action_duration=action_duration,
+            step_duration=campaign_step_duration,
+            sampling_time=campaign_sampling_time,
+        )
+
+        # Append the opinions and time points
+        if len(opinions_over_time) == 0:
+            opinions_over_time = opinions_campaign
+            time_points = times_campaign + current_time
+        else:
+            # Exclude the first time point to avoid duplicates
+            opinions_over_time = np.vstack((opinions_over_time, opinions_campaign[1:]))
+            time_points = np.concatenate(
+                (time_points, times_campaign[1:] + current_time)
+            )
+
+        # Update current time
+        current_time += campaign_step_duration
+
+    return opinions_over_time, time_points
 
 
 def plot_budget_distribution(budget_distribution, affected_nodes):
@@ -499,16 +453,16 @@ def run_broadcast_strategy(env, total_budget, experiment_steps):
 
 
 def run_campaign_with_sampling(
-    env, total_budget, action_duration, step_duration, sampling_time
+    env, action, action_duration, step_duration, sampling_time
 ):
     """
-    Run the experiment applying a control action over a specified action duration,
+    Run the experiment applying a given control action over a specified action duration,
     propagating the dynamics over a total step duration, and recording the opinions
-    at specified sampling intervals, using the environment's step function.
+    at specified sampling intervals, applying the action only once.
 
     Args:
         env (NetworkGraph): The NetworkGraph environment.
-        total_budget (int): The total number of units of u_max to spend in this campaign.
+        action (np.ndarray): Control action to apply.
         action_duration (float): Duration over which the action is applied.
         step_duration (float): Total duration over which the opinions are propagated.
         sampling_time (float): Time interval at which to sample the opinions.
@@ -516,8 +470,6 @@ def run_campaign_with_sampling(
     Returns:
         np.ndarray: The opinions over time at the specified sampling intervals.
         np.ndarray: The corresponding time points.
-        list: Budget distribution across campaigns.
-        list: Nodes affected in each campaign.
     """
     # Validate durations
     if action_duration < 0 or step_duration <= 0 or sampling_time <= 0:
@@ -525,48 +477,87 @@ def run_campaign_with_sampling(
     if action_duration > step_duration:
         raise ValueError("action_duration cannot be greater than step_duration.")
 
-    # Initialize lists to store opinions over time, budget distribution, and affected nodes
+    # Initialize lists to store opinions over time
     num_samples = int(np.ceil(step_duration / sampling_time)) + 1  # +1 to include t=0
     opinions_over_time = np.zeros((num_samples, env.num_agents))
-    time_points = np.linspace(0, step_duration, num_samples)
+    time_points = np.zeros(num_samples)
 
     # Record initial opinions
     opinions_over_time[0] = env.opinions.copy()
+    time_points[0] = 0.0
 
-    # Determine the control action
-    optimal_action, remaining_budget = optimal_control_action(env, total_budget)
+    # Apply the control action once
+    if action_duration > 0:
+        # Apply control by blending current opinions with the desired opinion
+        env.opinions = action * env.desired_opinion + (1 - action) * env.opinions
+        # Update total spent budget
+        env.total_spent += np.sum(action)
+        # Update current step
+        env.current_step += 1
 
-    # Track affected nodes and budget
-    affected_nodes = [list(np.where(optimal_action > 0)[0])]
-    budget_distribution = [np.sum(optimal_action)]
-
-    # Initialize time
-    current_time = 0.0
+    # Simulate dynamics over the total step_duration, sampling at sampling_time intervals
+    total_time = 0.0
     idx = 1  # Index for opinions_over_time
-    while current_time < step_duration and idx < num_samples:
+
+    while total_time < step_duration and idx < num_samples:
         # Determine the duration for this step
-        dt = min(sampling_time, step_duration - current_time)
+        dt = min(sampling_time, step_duration - total_time)
 
-        # Determine if action should be applied
-        if current_time < action_duration:
-            # Apply control action
-            action = optimal_action
-            action_duration_step = min(dt, action_duration - current_time)
+        # Determine the duration to propagate the opinions
+        if total_time < action_duration:
+            # During action_duration, propagate for dt or remaining action_duration
+            propagation_duration = dt
         else:
-            # No control action
-            action = np.zeros(env.num_agents)
-            action_duration_step = 0.0  # No action applied
+            # After action_duration, propagate for dt
+            propagation_duration = dt
 
-        # Step the environment
-        opinions, reward, done, truncated, info = env.step(
-            action=action, action_duration=action_duration_step, step_duration=dt
-        )
+        # Propagate opinions without applying control
+        expL = expm(-env.L * propagation_duration)
+        env.opinions = expL @ env.opinions
+        env.opinions = np.clip(env.opinions, 0, 1)
 
         # Record the opinions
-        opinions_over_time[idx] = opinions.copy()
-
-        # Update time and index
-        current_time += dt
+        total_time += dt
+        opinions_over_time[idx] = env.opinions.copy()
+        time_points[idx] = total_time
         idx += 1
 
-    return opinions_over_time, time_points, budget_distribution, affected_nodes
+    return opinions_over_time, time_points
+
+def normalize_campaign_time(time_points, campaign_durations, step_duration, final_campaign_step_duration):
+    
+    # Total number of campaigns
+    M = len(campaign_durations)
+
+    # Compute cumulative durations to find campaign boundaries
+    cumulative_durations = np.cumsum([0] + campaign_durations)
+    campaign_boundaries = cumulative_durations
+
+    # Initialize the normalized time points array
+    normalized_time_points = np.zeros_like(time_points)
+
+    # Process each campaign
+    for i in range(M):
+        # Get start and end times for the campaign
+        start_time = campaign_boundaries[i]
+        end_time = campaign_boundaries[i + 1]
+
+        # Find indices corresponding to this campaign
+        start_idx = np.searchsorted(time_points, start_time, side='left')
+        end_idx = np.searchsorted(time_points, end_time, side='right')
+
+        # Extract campaign time points
+        campaign_time = time_points[start_idx:end_idx]
+
+        # Normalize time within the campaign to span from i to i+1
+        if len(campaign_time) > 0:
+            campaign_duration = campaign_time[-1] - campaign_time[0]
+            if campaign_duration == 0:
+                # If the campaign duration is zero, set all times to i
+                normalized_campaign_time = np.full_like(campaign_time, i)
+            else:
+                # Normalize to [i, i+1]
+                normalized_campaign_time = i + (campaign_time - campaign_time[0]) / campaign_duration
+            normalized_time_points[start_idx:end_idx] = normalized_campaign_time
+
+    return normalized_time_points
