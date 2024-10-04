@@ -88,3 +88,34 @@ def plot_opinions_over_time(opinions_over_time, time_points=None):
     plt.grid(True)
     plt.tight_layout()
     plt.show()
+
+def plot_budget_distribution(budget_distribution, affected_nodes):
+    """
+    Plot the budget distribution across campaigns with annotations for affected nodes.
+
+    Args:
+        budget_distribution (list): The budget allocated in each campaign.
+        affected_nodes (list): The nodes affected in each campaign.
+    """
+    num_campaigns = len(budget_distribution)
+
+    plt.figure(figsize=(12, 6))
+    bars = plt.bar(range(num_campaigns), budget_distribution, color="skyblue")
+
+    plt.xlabel("Campaign Number")
+    plt.ylabel("Budget Allocated")
+    plt.title("Budget Distribution Across Campaigns with Affected Nodes")
+
+    for i, bar in enumerate(bars):
+        height = bar.get_height()
+        plt.text(
+            bar.get_x() + bar.get_width() / 2.0,
+            height,
+            ", ".join(map(str, affected_nodes[i])),
+            ha="center",
+            va="bottom",
+            fontsize=10,
+            rotation=90,
+        )
+
+    plt.show()
