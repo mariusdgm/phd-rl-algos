@@ -11,6 +11,7 @@ def plot_campaign_budgets(optimal_budget_allocation, nodes_controlled, control_i
         nodes_controlled (list): List of arrays containing indices of nodes controlled in each campaign.
         control_inputs (list): List of arrays containing control inputs applied in each campaign.
     """
+    control_inputs = control_inputs.copy()
     M = len(optimal_budget_allocation)  # Number of campaigns
     campaigns = np.arange(1, M + 1)  # Campaign numbers for the x-axis
 
@@ -35,6 +36,8 @@ def plot_campaign_budgets(optimal_budget_allocation, nodes_controlled, control_i
         nodes = nodes_controlled[idx]
 
         if len(nodes) > 0:
+            # Sort the nodes
+            nodes = sorted(nodes)
             # Create a string of node indices separated by commas
             nodes_str = ", ".join(map(str, nodes))
         else:
@@ -88,6 +91,7 @@ def plot_opinions_over_time(opinions_over_time, time_points=None):
     plt.grid(True)
     plt.tight_layout()
     plt.show()
+
 
 def plot_budget_distribution(budget_distribution, affected_nodes):
     """
