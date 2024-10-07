@@ -128,11 +128,7 @@ def perform_backward_induction(
     V, policy, env, opinion_grid, M, Q, step_duration, optimize_for_final_error
 ):
     N = env.num_agents
-    ubar = env.max_u
     d = env.desired_opinion
-    initial_opinions = env.opinions.copy()
-    initial_avg_opinion = np.mean(initial_opinions)
-    delta_i0 = initial_opinions - d
 
     for k in range(M - 1, -1, -1):
         print(f"Processing campaign {k + 1}/{M}")
@@ -141,7 +137,7 @@ def perform_backward_induction(
                 min_cost = float("inf")
                 best_b = None
                 best_u = None
-                best_controlled_agents = None
+                best_controlled_agents = None  # Include controlled_agents
                 best_avg_opinion_next = None
                 best_rem_budget_next = None
 
@@ -149,16 +145,8 @@ def perform_backward_induction(
                     # Create a temporary environment
                     temp_env = deepcopy(env)
 
-                    # Estimate scaling factor
-                    denominator = initial_avg_opinion - d
-                    if denominator != 0:
-                        scaling_factor = (avg_opinion - d) / denominator
-                    else:
-                        scaling_factor = 0  # Avoid division by zero
-
-                    # Estimate agents' opinions
-                    estimated_opinions = d + delta_i0 * scaling_factor
-                    temp_env.opinions = np.clip(estimated_opinions, 0, 1)
+                    # Set all agents' opinions to the current average opinion
+                    temp_env.opinions = np.full(N, avg_opinion)
 
                     # Determine the control action using the same function as in simulation
                     u, _, controlled_agents = optimal_control_action(temp_env, b)
@@ -186,11 +174,11 @@ def perform_backward_induction(
                         # Penalize at every campaign (cumulative error)
                         cost = np.abs(avg_opinion_next - d)
 
-                    # Interpolate future cost
+                    # Use cubic interpolation for future cost estimation
                     future_cost_function = interp1d(
                         opinion_grid,
                         V[k + 1, :, rem_budget_next],
-                        kind="linear",
+                        kind="cubic",
                         fill_value="extrapolate",
                     )
                     future_cost = future_cost_function(avg_opinion_next)
@@ -200,7 +188,9 @@ def perform_backward_induction(
                         min_cost = total_cost
                         best_b = b
                         best_u = u.copy()
-                        best_controlled_agents = controlled_agents.copy()
+                        best_controlled_agents = (
+                            controlled_agents.copy()
+                        )  # Store controlled_agents
                         best_avg_opinion_next = avg_opinion_next
                         best_rem_budget_next = rem_budget_next
 
@@ -209,7 +199,7 @@ def perform_backward_induction(
                 policy[k][(ix, rem_budget)] = {
                     "b": best_b,
                     "u": best_u,
-                    "controlled_agents": best_controlled_agents,
+                    "controlled_agents": best_controlled_agents,  # Include controlled_agents
                     "avg_opinion_next": best_avg_opinion_next,
                     "rem_budget_next": best_rem_budget_next,
                 }
@@ -279,6 +269,7 @@ def simulate_optimal_policy(policy, env, opinion_grid, M, Q, step_duration):
         control_inputs,
         final_opinion_error,
     )
+
 
 def get_final_error_for_budget_allocation(
     env, M, Q, step_duration, budget_allocation, optimize_for_final_error=True
@@ -363,6 +354,7 @@ def get_final_error_for_budget_allocation(
         avg_opinion = avg_opinion_next
 
     return total_cost
+
 
 def run_dynamic_programming_campaigns(
     env,
