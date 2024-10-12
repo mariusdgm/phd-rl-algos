@@ -73,42 +73,45 @@ def dynamic_programming_strategy(env, M, Q, step_duration):
     policy = [{} for _ in range(M)]
 
     # Backward induction from stage M down to stage 1 (inclusive)
-    for k in range(M - 1, -1, -1):
-        print(f"DP step {k}")
+    for k in range(M - 1, 0, -1):
+        print(f"DP step {k + 1}")
         for ix, x in enumerate(Xgrid):  # Current state
             for rem in range(Q + 1):  # Remaining budget
                 val = np.inf  # Reset the value to infinity for minimization
+                best_policy_entry = None
                 u = uzero.copy()  # Reset control input
-                for beta in range(0, min(rem, N) + 1):
-                    if beta > 0:
-                        u[order[:beta]] = ubar  # Control the top beta agents
 
-                    # Calculate the next state and remaining budget
+                for beta in range(0, min(rem, N) + 1):
+                    # If beta > 0, control the top `beta` agents
+                    if beta > 0:
+                        u[order[:beta]] = ubar  # Control the top `beta` agents
+
+                    # Calculate next state (xplus) and remaining budget (remplus)
                     xplus = np.dot(eigv, u * d + (1 - u) * x)
                     remplus = rem - beta
 
-                    # Interpolate future cost
-                    if remplus >= 0:
+                    # Ensure the remaining budget is valid and within bounds
+                    if remplus >= 0 and remplus <= Q:  # Boundary check for remplus
+                        # Interpolate future cost
                         future_cost_function = interp1d(
                             Xgrid,
                             V[k + 1, :, remplus],
-                            kind="linear",
+                            kind="cubic",
                             fill_value="extrapolate",
                         )
                         vplus = future_cost_function(xplus)
-                    else:
-                        vplus = np.inf  # Avoid invalid future state
 
-                    # Minimize the total cost
-                    if vplus < val:
-                        val = vplus
-                        best_policy_entry = {
-                            "beta": beta,
-                            "u": u.copy(),
-                            "xplus": xplus,
-                            "remplus": remplus,
-                            "controlled_agents": order[:beta],
-                        }
+                        # Minimize total cost
+                        total_cost = vplus
+                        if total_cost < val:
+                            val = total_cost
+                            best_policy_entry = {
+                                "beta": beta,
+                                "u": u.copy(),
+                                "xplus": xplus,
+                                "remplus": remplus,
+                                "controlled_agents": order[:beta],
+                            }
 
                 # Update the value function with the minimum cost found
                 V[k, ix, rem] = val
@@ -139,6 +142,7 @@ def extract_optimal_policy(policy, env, Xgrid, V, M, Q, step_duration):
     for k in range(M):
         val = np.inf
         ustar = uzero.copy()
+        best_policy_entry = None
         for beta in range(0, min(rem, N) + 1):
             u = uzero.copy()
             if beta > 0:
@@ -151,13 +155,13 @@ def extract_optimal_policy(policy, env, Xgrid, V, M, Q, step_duration):
             xplus = np.dot(eigv, u * d + (1 - u) * X[k])
             remplus = rem - beta
 
-            # Interpolate future cost
-            if remplus >= 0:
+            # Ensure remaining budget is valid and interpolate future cost
+            if remplus >= 0 and remplus <= Q:  # Boundary check for remplus
                 if k < M - 1:
                     future_cost_function = interp1d(
                         Xgrid,
                         V[k + 1, :, remplus],
-                        kind="linear",
+                        kind="cubic",
                         fill_value="extrapolate",
                     )
                     vplus = future_cost_function(xplus)
@@ -173,7 +177,7 @@ def extract_optimal_policy(policy, env, Xgrid, V, M, Q, step_duration):
                 betastar = beta
                 controlled_agents = np.where(u > 0)[0]
 
-        # Store the results
+        # Store the results for this stage
         control_inputs.append(ustar)
         X[k + 1] = xplusstar
         optimal_budget_allocation.append(betastar)
