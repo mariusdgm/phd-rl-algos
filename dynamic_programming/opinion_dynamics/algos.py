@@ -48,61 +48,82 @@ def optimal_control_action(env, total_budget):
     return u, remaining_budget, controlled_agents
 
 
-def dynamic_programming_strategy(env, M, Q, step_duration):
+def state_transition(env, x, u, step_duration):
+    # Compute the controlled opinions
+    opinions_controlled = u * env.desired_opinion + (1 - u) * x
 
+    # Propagate opinions over the network
+    expL = expm(-env.L * step_duration)
+    opinions_next = expL @ opinions_controlled
+
+    # Compute the next average opinion
+    xplus = env.centralities @ opinions_next  # Assuming centralities sum to 1
+    return xplus
+
+
+def dynamic_programming_strategy(env, M, Q, step_duration):
     N = env.num_agents
     d = env.desired_opinion
     ubar = env.max_u
-    eigv = env.centralities / np.sum(env.centralities)
     x0 = np.mean(env.opinions)
 
-    nx = 40  # Increase discretization points for better accuracy
+    nx = 20  # Number of discretization points
     Xgrid = np.linspace(0, 1, nx)
 
-    # Agents order based on eigenvector centrality
+    # Compute initial influence powers for the first iteration
+    deviations = np.abs(env.opinions - d)
+    influence_powers = env.centralities * deviations
+    order0 = np.argsort(influence_powers)[::-1]
+
+    # Agent order based on centrality for subsequent iterations
     order = np.argsort(env.centralities)[::-1]
-    uzero = np.zeros(N)
 
     # Initialize value function V
     V = np.full((M + 1, nx, Q + 1), np.inf)
     # Final cost at stage M
     for ix, x in enumerate(Xgrid):
-        V[M, ix, :] = abs(x - d)
+        V[M, ix, :] = 0  # No future cost
 
     # Initialize policy
     policy = [{} for _ in range(M)]
 
-    # Backward induction from stage M down to stage 1 (inclusive)
-    for k in range(M - 1, 0, -1):
+    # Backward induction
+    for k in range(M - 1, -1, -1):
         print(f"DP step {k + 1}")
-        for ix, x in enumerate(Xgrid):  # Current state
-            for rem in range(Q + 1):  # Remaining budget
-                val = np.inf  # Reset the value to infinity for minimization
+        for ix, x in enumerate(Xgrid):
+            for rem in range(Q + 1):
+                val = np.inf
                 best_policy_entry = None
-                u = uzero.copy()  # Reset control input
 
                 for beta in range(0, min(rem, N) + 1):
-                    # If beta > 0, control the top `beta` agents
+                    u = np.zeros(N)
                     if beta > 0:
-                        u[order[:beta]] = ubar  # Control the top `beta` agents
+                        if k == M - 1:  # First iteration
+                            u[order0[:beta]] = ubar
+                        else:
+                            u[order[:beta]] = ubar
 
-                    # Calculate next state (xplus) and remaining budget (remplus)
-                    xplus = np.dot(eigv, u * d + (1 - u) * x)
+                    xplus = state_transition(env, x, u, step_duration)
                     remplus = rem - beta
 
-                    # Ensure the remaining budget is valid and within bounds
-                    if remplus >= 0 and remplus <= Q:  # Boundary check for remplus
-                        # Interpolate future cost
-                        future_cost_function = interp1d(
-                            Xgrid,
-                            V[k + 1, :, remplus],
-                            kind="cubic",
-                            fill_value="extrapolate",
-                        )
-                        vplus = future_cost_function(xplus)
+                    if remplus >= 0:
+                        # Immediate cost at current stage
+                        immediate_cost = abs(xplus - d)
 
-                        # Minimize total cost
-                        total_cost = vplus
+                        # Future cost
+                        if k < M - 1:
+                            future_cost_function = interp1d(
+                                Xgrid,
+                                V[k + 1, :, remplus],
+                                kind="linear",
+                                fill_value="extrapolate",
+                            )
+                            vplus = future_cost_function(xplus)
+                        else:
+                            vplus = 0  # No future cost at the last stage
+
+                        total_cost = immediate_cost + vplus
+
                         if total_cost < val:
                             val = total_cost
                             best_policy_entry = {
@@ -110,10 +131,11 @@ def dynamic_programming_strategy(env, M, Q, step_duration):
                                 "u": u.copy(),
                                 "xplus": xplus,
                                 "remplus": remplus,
-                                "controlled_agents": order[:beta],
+                                "controlled_agents": (
+                                    order0[:beta] if k == M - 1 else order[:beta]
+                                ),
                             }
 
-                # Update the value function with the minimum cost found
                 V[k, ix, rem] = val
                 if best_policy_entry is not None:
                     policy_key = (ix, rem)
@@ -126,63 +148,74 @@ def extract_optimal_policy(policy, env, Xgrid, V, M, Q, step_duration):
     N = env.num_agents
     d = env.desired_opinion
     ubar = env.max_u
-    eigv = env.centralities / np.sum(env.centralities)
-    x0 = np.mean(env.opinions)
-    uzero = np.zeros(N)
-    # Agent orders
-    order = np.argsort(env.centralities)[::-1]
-    order0 = np.argsort(env.centralities * np.abs(env.opinions - d))[::-1]
     rem = Q
     X = np.zeros(M + 1)
-    X[0] = x0
+    X[0] = np.mean(env.opinions)
     optimal_budget_allocation = []
     nodes_controlled = []
     control_inputs = []
 
+    # Compute initial influence powers for the first iteration
+    deviations = np.abs(env.opinions - d)
+    influence_powers = env.centralities * deviations
+    order0 = np.argsort(influence_powers)[::-1]
+
+    # Agent order based on centrality for subsequent iterations
+    order = np.argsort(env.centralities)[::-1]
+
+    total_cost = 0  # Initialize total cost
+
     for k in range(M):
         val = np.inf
-        ustar = uzero.copy()
-        best_policy_entry = None
+        ustar = np.zeros(N)
+        x = X[k]
+
         for beta in range(0, min(rem, N) + 1):
-            u = uzero.copy()
+            u = np.zeros(N)
             if beta > 0:
-                if k == 0:  # Stage 1 uses order0
+                if k == 0:  # First iteration
                     u[order0[:beta]] = ubar
-                else:  # Subsequent stages use order
+                else:
                     u[order[:beta]] = ubar
 
-            # Calculate next state and remaining budget
-            xplus = np.dot(eigv, u * d + (1 - u) * X[k])
+            xplus = state_transition(env, x, u, step_duration)
             remplus = rem - beta
 
-            # Ensure remaining budget is valid and interpolate future cost
-            if remplus >= 0 and remplus <= Q:  # Boundary check for remplus
+            if remplus >= 0:
+                # Immediate cost
+                immediate_cost = abs(xplus - d)
+
                 if k < M - 1:
                     future_cost_function = interp1d(
                         Xgrid,
                         V[k + 1, :, remplus],
-                        kind="cubic",
+                        kind="linear",
                         fill_value="extrapolate",
                     )
                     vplus = future_cost_function(xplus)
                 else:
-                    vplus = abs(xplus - d)
+                    vplus = 0  # No future cost at the last stage
 
-            # Minimize total cost
-            if vplus < val:
-                val = vplus
-                xplusstar = xplus
-                remstar = remplus
-                ustar = u.copy()
-                betastar = beta
-                controlled_agents = np.where(u > 0)[0]
+                total_cost_candidate = total_cost + immediate_cost + vplus
 
-        # Store the results for this stage
-        control_inputs.append(ustar)
+                if total_cost_candidate < val:
+                    val = total_cost_candidate
+                    xplusstar = xplus
+                    remstar = remplus
+                    ustar = u.copy()
+                    betastar = beta
+                    controlled_agents = np.where(u > 0)[0]
+                    immediate_cost_star = immediate_cost
+
+        # Update state and budget
         X[k + 1] = xplusstar
+        rem = remstar
+        total_cost += immediate_cost_star
+
+        # Store the control action
+        control_inputs.append(ustar)
         optimal_budget_allocation.append(betastar)
         nodes_controlled.append(controlled_agents)
-        rem = remstar
 
     final_opinion_error = abs(X[-1] - d)
     return (
@@ -272,7 +305,7 @@ def run_dynamic_programming_campaigns(
     nodes_controlled_simulation = []
 
     for k in range(M):
-        print(f"Running campaign {k + 1}/{M}")
+        # print(f"Running campaign {k + 1}/{M}")
         # Determine the budget for this campaign
         budget_k = optimal_budget_allocation[k]
 
