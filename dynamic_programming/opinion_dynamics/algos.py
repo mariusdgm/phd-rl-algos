@@ -62,6 +62,7 @@ def state_transition(env, x, u, step_duration):
 
 
 def dynamic_programming_strategy(env, M, Q, step_duration):
+
     N = env.num_agents
     d = env.desired_opinion
     ubar = env.max_u
@@ -82,7 +83,7 @@ def dynamic_programming_strategy(env, M, Q, step_duration):
     V = np.full((M + 1, nx, Q + 1), np.inf)
     # Final cost at stage M
     for ix, x in enumerate(Xgrid):
-        V[M, ix, :] = 0  # No future cost
+        V[M, ix, :] = abs(x - d)
 
     # Initialize policy
     policy = [{} for _ in range(M)]
@@ -94,6 +95,7 @@ def dynamic_programming_strategy(env, M, Q, step_duration):
             for rem in range(Q + 1):
                 val = np.inf
                 best_policy_entry = None
+                u = np.zeros(N)
 
                 for beta in range(0, min(rem, N) + 1):
                     u = np.zeros(N)
@@ -107,22 +109,16 @@ def dynamic_programming_strategy(env, M, Q, step_duration):
                     remplus = rem - beta
 
                     if remplus >= 0:
-                        # Immediate cost at current stage
-                        immediate_cost = abs(xplus - d)
+                        # Interpolate future cost
+                        future_cost_function = interp1d(
+                            Xgrid,
+                            V[k + 1, :, remplus],
+                            kind="linear",
+                            fill_value="extrapolate",
+                        )
+                        vplus = future_cost_function(xplus)
 
-                        # Future cost
-                        if k < M - 1:
-                            future_cost_function = interp1d(
-                                Xgrid,
-                                V[k + 1, :, remplus],
-                                kind="linear",
-                                fill_value="extrapolate",
-                            )
-                            vplus = future_cost_function(xplus)
-                        else:
-                            vplus = 0  # No future cost at the last stage
-
-                        total_cost = immediate_cost + vplus
+                        total_cost = vplus
 
                         if total_cost < val:
                             val = total_cost
@@ -131,9 +127,7 @@ def dynamic_programming_strategy(env, M, Q, step_duration):
                                 "u": u.copy(),
                                 "xplus": xplus,
                                 "remplus": remplus,
-                                "controlled_agents": (
-                                    order0[:beta] if k == M - 1 else order[:beta]
-                                ),
+                                "controlled_agents": order0[:beta] if k == M - 1 else order[:beta],
                             }
 
                 V[k, ix, rem] = val
@@ -142,6 +136,8 @@ def dynamic_programming_strategy(env, M, Q, step_duration):
                     policy[k][policy_key] = best_policy_entry
 
     return policy, Xgrid, V
+
+
 
 
 def extract_optimal_policy(policy, env, Xgrid, V, M, Q, step_duration):
@@ -163,8 +159,6 @@ def extract_optimal_policy(policy, env, Xgrid, V, M, Q, step_duration):
     # Agent order based on centrality for subsequent iterations
     order = np.argsort(env.centralities)[::-1]
 
-    total_cost = 0  # Initialize total cost
-
     for k in range(M):
         val = np.inf
         ustar = np.zeros(N)
@@ -182,9 +176,6 @@ def extract_optimal_policy(policy, env, Xgrid, V, M, Q, step_duration):
             remplus = rem - beta
 
             if remplus >= 0:
-                # Immediate cost
-                immediate_cost = abs(xplus - d)
-
                 if k < M - 1:
                     future_cost_function = interp1d(
                         Xgrid,
@@ -194,23 +185,21 @@ def extract_optimal_policy(policy, env, Xgrid, V, M, Q, step_duration):
                     )
                     vplus = future_cost_function(xplus)
                 else:
-                    vplus = 0  # No future cost at the last stage
+                    vplus = abs(xplus - d)
 
-                total_cost_candidate = total_cost + immediate_cost + vplus
+                total_cost = vplus
 
-                if total_cost_candidate < val:
-                    val = total_cost_candidate
+                if total_cost < val:
+                    val = total_cost
                     xplusstar = xplus
                     remstar = remplus
                     ustar = u.copy()
                     betastar = beta
                     controlled_agents = np.where(u > 0)[0]
-                    immediate_cost_star = immediate_cost
 
         # Update state and budget
         X[k + 1] = xplusstar
         rem = remstar
-        total_cost += immediate_cost_star
 
         # Store the control action
         control_inputs.append(ustar)
@@ -225,6 +214,7 @@ def extract_optimal_policy(policy, env, Xgrid, V, M, Q, step_duration):
         final_opinion_error,
         X,
     )
+
 
 
 def compute_expected_value_for_budget_distribution(
