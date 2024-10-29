@@ -46,150 +46,6 @@ def optimal_control_action(env, total_budget):
     return u, remaining_budget, controlled_agents
 
 
-def dynamic_programming_with_grid(env, M, TB, nx=10, epsilon=1e-8):
-    """
-    Implement dynamic programming with state grid and budget.
-
-    Args:
-        env (NetworkGraph): The environment instance.
-        M (int): Number of campaigns.
-        K (int): Total budget.
-        nx (int): Number of discretization points on the grid for x.
-
-    Returns:
-        V (ndarray): Value function of shape (M+1, nx, K+1).
-        order, order0 (list): Sorted agent orders based on centrality and initial deviation.
-    """
-    N = env.num_agents
-    ubar = env.max_u
-    x0 = np.mean(env.opinions)
-    xd = env.desired_opinion
-    eigv = env.centralities
-
-    # Grid for the state
-    Xgrid = np.linspace(0, 1, nx)
-
-    # Agent orderings based on centralities and initial influence powers
-    order = np.argsort(eigv)[::-1]  # Descending order of centralities
-    score0 = eigv * np.abs(x0 - xd)
-    order0 = np.argsort(score0)[::-1]  # Descending order of score0
-
-    uzero = np.zeros(N, dtype=np.float64)
-
-    # Initialize value function V
-    V = np.full((M + 1, nx, TB + 1), np.inf)
-
-    # Final cost for the last stage (adjust to Python indexing)
-    for ix in range(nx):
-        V[M, ix, :] = np.abs(Xgrid[ix] - xd)
-
-    # Backward induction from stage M-1 down to stage 2
-    for k in range(M - 1, 0, -1):
-        print(f"DP step {k}")
-        for ix in range(nx):  # Loop over grid points for the current state
-            for rem in range(TB + 1):  # Loop over remaining budget
-                x = Xgrid[ix]
-                val = np.inf
-                u = uzero.copy()
-                for beta in range(0, min(rem, N) + 1):
-                    if beta > 0:
-                        u[order[beta - 1]] = ubar
-                    xplus = np.dot(eigv, u * xd + (1 - u) * x)
-                    # xplus = np.clip(
-                    #     xplus, Xgrid[0], Xgrid[-1]
-                    # )
-                    remplus = rem - beta
-
-                    # Interpolate future cost
-                    vplus = interp1d(
-                        Xgrid,
-                        V[k + 1, :, remplus],
-                        kind="linear",
-                        # fill_value="extrapolate",
-                    )(xplus)
-                    # vplus = np.interp(xplus, Xgrid, V[k + 1, :, remplus])
-                    val = min(val, vplus)
-
-                V[k, ix, rem] = val
-
-    return V, order, order0
-
-
-def forward_propagation_with_grid(env, V, order, order0, M, TB, nx=10, epsilon=1e-8):
-    """
-    Forward propagation from given initial state using dynamic programming results.
-
-    Args:
-        env (NetworkGraph): The environment instance.
-        V (ndarray): Value function from dynamic programming.
-        order (list): Agent order based on centrality.
-        order0 (list): Agent order based on initial influence.
-        M (int): Number of campaigns.
-        TB (int): Total budget.
-        nx (int): Number of discretization points on the grid for x.
-
-    Returns:
-        BETA (list): Optimal budget allocations.
-        X (ndarray): State of the network after each campaign.
-        U (ndarray): Control inputs applied to the agents.
-        final_cost (float): Final cost (discrepancy from target opinion).
-    """
-    N = env.num_agents
-    ubar = env.max_u
-    x0 = np.mean(env.opinions)
-    xd = env.desired_opinion
-    eigv = env.centralities
-    Xgrid = np.linspace(0, 1, nx)  # State grid
-
-    X = np.zeros((N, M + 1))
-    BETA = np.zeros(M, dtype=int)
-    U = np.zeros((N, M))
-    X[:, 0] = env.opinions.copy()  # Initial opinions
-    rem = TB
-    uzero = np.zeros(N, dtype=np.float64)
-    # xplusstar = np.inf
-    # betastar = 1
-    # remstar = 0
-
-    for k in range(M):
-        val = np.inf
-        ustar = uzero.copy()
-        u = uzero.copy()
-        for beta in range(0, min(rem, N - 1) + 1):
-            if beta > 0:
-                if k == 0:
-                    u[order0[beta - 1]] = ubar
-                else:
-                    u[order[beta - 1]] = ubar
-            xplus = np.dot(eigv, u * xd + (1 - u) * X[:, k])
-            # xplus = np.clip(
-            #     xplus, Xgrid[0], Xgrid[-1]
-            # )
-            remplus = rem - beta
-
-            vplus = interp1d(
-                Xgrid,
-                V[k + 1, :, remplus],
-                kind="linear",
-                # fill_value="extrapolate"
-            )(xplus)
-            # vplus = np.interp(xplus, Xgrid, V[k + 1, :, remplus])
-            if vplus < val:  # save best solution
-                val = vplus
-                xplusstar = xplus
-                remstar = remplus
-                ustar = u.copy()
-                betastar = beta
-
-        U[:, k] = ustar
-        X[:, k + 1] = xplusstar
-        BETA[k] = betastar
-        rem = remstar
-
-    final_cost = np.abs(np.mean(X[:, -1]) - xd)
-    return BETA, U, X, final_cost
-
-
 def dynamic_programming_multiplicative(env, M, TB):
     """
     Generalized multiplicative dynamic programming for long-stage control.
@@ -617,3 +473,146 @@ def compute_expected_value_for_budget_distribution(
         X[k + 1] = xplus
     final_opinion_error = abs(X[-1] - d)
     return final_opinion_error, total_cost, costs, X
+
+def dynamic_programming_with_grid(env, M, TB, nx=10, epsilon=1e-8):
+    """
+    Implement dynamic programming with state grid and budget.
+
+    Args:
+        env (NetworkGraph): The environment instance.
+        M (int): Number of campaigns.
+        K (int): Total budget.
+        nx (int): Number of discretization points on the grid for x.
+
+    Returns:
+        V (ndarray): Value function of shape (M+1, nx, K+1).
+        order, order0 (list): Sorted agent orders based on centrality and initial deviation.
+    """
+    N = env.num_agents
+    ubar = env.max_u
+    x0 = np.mean(env.opinions)
+    xd = env.desired_opinion
+    eigv = env.centralities
+
+    # Grid for the state
+    Xgrid = np.linspace(0, 1, nx)
+
+    # Agent orderings based on centralities and initial influence powers
+    order = np.argsort(eigv)[::-1]  # Descending order of centralities
+    score0 = eigv * np.abs(x0 - xd)
+    order0 = np.argsort(score0)[::-1]  # Descending order of score0
+
+    uzero = np.zeros(N, dtype=np.float64)
+
+    # Initialize value function V
+    V = np.full((M + 1, nx, TB + 1), np.inf)
+
+    # Final cost for the last stage (adjust to Python indexing)
+    for ix in range(nx):
+        V[M, ix, :] = np.abs(Xgrid[ix] - xd)
+
+    # Backward induction from stage M-1 down to stage 2
+    for k in range(M - 1, 0, -1):
+        print(f"DP step {k}")
+        for ix in range(nx):  # Loop over grid points for the current state
+            for rem in range(TB + 1):  # Loop over remaining budget
+                x = Xgrid[ix]
+                val = np.inf
+                u = uzero.copy()
+                for beta in range(0, min(rem, N) + 1):
+                    if beta > 0:
+                        u[order[beta - 1]] = ubar
+                    xplus = np.dot(eigv, u * xd + (1 - u) * x)
+                    # xplus = np.clip(
+                    #     xplus, Xgrid[0], Xgrid[-1]
+                    # )
+                    remplus = rem - beta
+
+                    # Interpolate future cost
+                    vplus = interp1d(
+                        Xgrid,
+                        V[k + 1, :, remplus],
+                        kind="linear",
+                        # fill_value="extrapolate",
+                    )(xplus)
+                    # vplus = np.interp(xplus, Xgrid, V[k + 1, :, remplus])
+                    val = min(val, vplus)
+
+                V[k, ix, rem] = val
+
+    return V, order, order0
+
+
+def forward_propagation_with_grid(env, V, order, order0, M, TB, nx=10, epsilon=1e-8):
+    """
+    Forward propagation from given initial state using dynamic programming results.
+
+    Args:
+        env (NetworkGraph): The environment instance.
+        V (ndarray): Value function from dynamic programming.
+        order (list): Agent order based on centrality.
+        order0 (list): Agent order based on initial influence.
+        M (int): Number of campaigns.
+        TB (int): Total budget.
+        nx (int): Number of discretization points on the grid for x.
+
+    Returns:
+        BETA (list): Optimal budget allocations.
+        X (ndarray): State of the network after each campaign.
+        U (ndarray): Control inputs applied to the agents.
+        final_cost (float): Final cost (discrepancy from target opinion).
+    """
+    N = env.num_agents
+    ubar = env.max_u
+    x0 = np.mean(env.opinions)
+    xd = env.desired_opinion
+    eigv = env.centralities
+    Xgrid = np.linspace(0, 1, nx)  # State grid
+
+    X = np.zeros((N, M + 1))
+    BETA = np.zeros(M, dtype=int)
+    U = np.zeros((N, M))
+    X[:, 0] = env.opinions.copy()  # Initial opinions
+    rem = TB
+    uzero = np.zeros(N, dtype=np.float64)
+    # xplusstar = np.inf
+    # betastar = 1
+    # remstar = 0
+
+    for k in range(M):
+        val = np.inf
+        ustar = uzero.copy()
+        u = uzero.copy()
+        for beta in range(0, min(rem, N - 1) + 1):
+            if beta > 0:
+                if k == 0:
+                    u[order0[beta - 1]] = ubar
+                else:
+                    u[order[beta - 1]] = ubar
+            xplus = np.dot(eigv, u * xd + (1 - u) * X[:, k])
+            # xplus = np.clip(
+            #     xplus, Xgrid[0], Xgrid[-1]
+            # )
+            remplus = rem - beta
+
+            vplus = interp1d(
+                Xgrid,
+                V[k + 1, :, remplus],
+                kind="linear",
+                # fill_value="extrapolate"
+            )(xplus)
+            # vplus = np.interp(xplus, Xgrid, V[k + 1, :, remplus])
+            if vplus < val:  # save best solution
+                val = vplus
+                xplusstar = xplus
+                remstar = remplus
+                ustar = u.copy()
+                betastar = beta
+
+        U[:, k] = ustar
+        X[:, k + 1] = xplusstar
+        BETA[k] = betastar
+        rem = remstar
+
+    final_cost = np.abs(np.mean(X[:, -1]) - xd)
+    return BETA, U, X, final_cost
