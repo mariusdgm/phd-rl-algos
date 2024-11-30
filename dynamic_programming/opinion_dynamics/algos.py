@@ -7,6 +7,137 @@ import numpy as np
 from itertools import product, combinations
 from copy import deepcopy
 
+
+def run_policy_campaigns(env, policy, nx, step_duration, sampling_time, tolerance=0.01, max_campaigns=100):
+    """
+    Run the simulation using a given policy with a maximum number of campaigns.
+
+    Args:
+        env: The environment with network properties.
+        policy: The control policy to be used.
+        nx: Number of grid points per dimension (used for mapping states to grid indices).
+        step_duration: Duration of each policy application.
+        sampling_time: Time between samples during a campaign.
+        tolerance: Tolerance for the mean opinion to stop the campaigns.
+        max_campaigns: Maximum number of campaigns to run.
+
+    Returns:
+        opinions_over_time: Array of opinions over the entire simulation.
+        time_points: Corresponding time points for each opinion snapshot.
+        nodes_controlled_simulation: List of nodes controlled in each campaign.
+    """
+    N = env.num_agents
+    opinions_over_time = []
+    time_points = []
+    current_time = 0.0
+    nodes_controlled_simulation = []
+    X = env.opinions.copy()
+    grids = create_state_grid(N, nx)
+    campaign_count = 0  # Initialize campaign count
+
+    while True:
+        # Increment campaign count
+        campaign_count += 1
+
+        # Map the current state to the closest grid point indices
+        idx = tuple(np.abs(grids[i] - X[i]).argmin() for i in range(N))
+        # Get the control action from the policy
+        control_input = policy.get(idx, np.zeros(N))
+
+        # Keep track of which nodes are controlled (non-zero control input)
+        controlled_nodes = np.where(control_input > 0)[0]
+        nodes_controlled_simulation.append(controlled_nodes)
+
+        # Apply control and simulate over step_duration with sampling
+        opinions_campaign, times_campaign = simulate_campaign_with_sampling(
+            env, control_input, X, step_duration, sampling_time
+        )
+
+        # Adjust time points to include the cumulative time
+        times_campaign += current_time
+
+        # Append the opinions and time points from the current campaign
+        if len(opinions_over_time) == 0:
+            opinions_over_time = opinions_campaign
+            time_points = times_campaign
+        else:
+            opinions_over_time = np.vstack((opinions_over_time, opinions_campaign[1:]))
+            time_points = np.concatenate((time_points, times_campaign[1:]))
+
+        # Update the current time and state
+        current_time = time_points[-1]
+        X = opinions_campaign[-1].copy()
+
+        # Check if the mean opinion is within the tolerance
+        mean_opinion_error = np.abs(np.mean(X) - env.desired_opinion)
+        if mean_opinion_error <= tolerance:
+            break
+
+        # Check if maximum number of campaigns has been reached
+        if campaign_count >= max_campaigns:
+            print("Maximum number of campaigns reached.")
+            break
+
+    print(f"Simulation stopped after {campaign_count} campaigns.")
+    return opinions_over_time, time_points, nodes_controlled_simulation
+
+def simulate_campaign_with_sampling(env, control_input, X, step_duration, sampling_time):
+    N = env.num_agents
+    num_samples = int(np.ceil(step_duration / sampling_time)) + 1
+    opinions_over_time = np.zeros((num_samples, N))
+    time_points = np.zeros(num_samples)
+
+    opinions_over_time[0] = X.copy()
+    time_points[0] = 0.0
+    current_time = 0.0
+
+    # Simulate over the step_duration with sampling
+    for idx in range(1, num_samples):
+        dt = min(sampling_time, step_duration - current_time)
+        current_time += dt
+
+        # Apply control only at the first sample
+        if idx == 1:
+            control = control_input
+        else:
+            control = np.zeros(N)
+
+        # Update the state using the dynamics
+        X = env.compute_dynamics(X, control, dt)
+        X = np.clip(X, 0, 1)
+
+        # Record the opinions and time
+        opinions_over_time[idx] = X.copy()
+        time_points[idx] = current_time
+
+    return opinions_over_time, time_points
+
+def generate_full_control_policy(env, nx):
+    """
+    Generate a control policy that applies maximum control to all agents in all states.
+
+    Args:
+        env: The environment with network properties.
+        nx: Number of grid points per dimension (used for state grid creation).
+
+    Returns:
+        policy: A dictionary mapping state indices to control actions.
+    """
+    N = env.num_agents
+    ubar = env.max_u
+    grids = create_state_grid(N, nx)
+    grid_shape = tuple(len(grid) for grid in grids)
+
+    # Define the full control action (maximum control for all agents)
+    full_control_action = np.full(N, ubar)
+    policy = {}
+
+    # Map every state in the grid to the full control action
+    for idx in np.ndindex(grid_shape):
+        policy[idx] = full_control_action.copy()
+
+    return policy
+    
 def optimal_control_action(env, total_budget):
     """
     Implement the optimal control strategy using precomputed centralities and influence powers.
