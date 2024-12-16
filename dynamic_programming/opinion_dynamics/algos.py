@@ -68,7 +68,6 @@ def run_policy_campaigns(env, policy, nx, step_duration, sampling_time, toleranc
         current_time = time_points[-1]
         X = opinions_campaign[-1].copy()
 
-        # TODO: change this to checking if consecutive steps have the same state
         # Check if the mean opinion is within the tolerance
         mean_opinion_error = np.abs(np.mean(X) - env.desired_opinion)
         if mean_opinion_error <= tolerance:
