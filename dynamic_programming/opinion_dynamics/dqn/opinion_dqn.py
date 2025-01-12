@@ -14,12 +14,11 @@ from tensorboardX import SummaryWriter
 
 import gym
 
-from minatar_dqn.replay_buffer import ReplayBuffer
-from experiments.experiment_utils import seed_everything
-from minatar_dqn.utils.my_logging import setup_logger
-from minatar_dqn.utils.generic import merge_dictionaries, replace_keys
-from minatar_dqn.models import Conv_QNET, Conv_QNET_one
-from minatar_dqn.minatar_gym_wrappers import PermuteMinatarObsSpace
+from dqn.replay_buffer import ReplayBuffer
+from dqn.utils.experiment import seed_everything
+from dqn.utils.my_logging import setup_logger
+from dqn.utils.generic import merge_dictionaries, replace_keys
+from dqn.models import OpinionNet
 
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 device = "cpu"
@@ -82,9 +81,7 @@ class AgentDQN:
             self.train_stats_file = os.path.join(
                 self.experiment_output_folder, f"{self.experiment_name}_train_stats"
             )
-            if enable_tensorboard_logging:
-                tensor_logs_path = os.path.join(experiment_output_folder, "tb_logs")
-                
+             
 
         self.config = config
         if self.config:
@@ -259,35 +256,22 @@ class AgentDQN:
         """
         estimator_settings = config.get("estimator", {"model": "Conv_QNET", "args": {}})
 
-        if estimator_settings["model"] == "Conv_QNET":
-            self.policy_model = Conv_QNET(
+        if estimator_settings["model"] == "OpinionNet":
+            self.policy_model = OpinionNet(
                 self.in_features,
                 self.in_channels,
                 self.num_actions,
                 **estimator_settings["args"],
             )
-            self.target_model = Conv_QNET(
-                self.in_features,
-                self.in_channels,
-                self.num_actions,
-                **estimator_settings["args"],
-            )
-        elif estimator_settings["model"] == "Conv_QNET_one":
-            self.policy_model = Conv_QNET_one(
-                self.in_features,
-                self.in_channels,
-                self.num_actions,
-                **estimator_settings["args"],
-            )
-            self.target_model = Conv_QNET_one(
+            self.target_model = OpinionNet(
                 self.in_features,
                 self.in_channels,
                 self.num_actions,
                 **estimator_settings["args"],
             )
         else:
-            estiamtor_name = estimator_settings["model"]
-            raise ValueError(f"Could not setup estimator. Tried with: {estiamtor_name}")
+            estimator_name = estimator_settings["model"]
+            raise ValueError(f"Could not setup estimator. Tried with: {estimator_name}")
 
         optimizer_settings = config.get("optim", {"name": "Adam", "args": {}})
         self.optimizer = optim.Adam(
@@ -296,13 +280,7 @@ class AgentDQN:
 
         self.logger.info("Initialized newtworks and optimizer.")
 
-        # initialize the bias if we shift the reward distibution
-        if self.reward_perception:
-            bias = self.reward_perception["shift"] / (1 - self.gamma)
-            with torch.no_grad():
-                self.policy_model.fc[-1].bias.fill_(bias)
-                self.target_model.fc[-1].bias.fill_(bias)
-
+    
     def _read_and_init_envs(self):
         """Read dimensions of the input and output of the simulation environment"""
         # returns state as [w, h, channels]
@@ -365,8 +343,6 @@ class AgentDQN:
             "training_stats": self.training_stats,
             "validation_stats": self.validation_stats,
         }
-
-       
 
         torch.save(
             status_dict,
@@ -474,9 +450,6 @@ class AgentDQN:
 
             self.logger.info(f"Epoch {epoch} completed in {epoch_time}")
             self.logger.info("\n")
-
-        if self.tensor_board_writer:
-            self.tensor_board_writer.close()
 
         self.logger.info(
             f"Ended training session after {train_epochs} epochs at t = {self.t}"
