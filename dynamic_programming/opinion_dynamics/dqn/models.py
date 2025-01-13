@@ -111,4 +111,9 @@ class OpinionNet(nn.Module):
         A_inv = 1.0 / A_diag
         w_star = -A_inv * b  # Element-wise multiplication
 
-        return w_star, A_diag, b
+        # Compute \( Q(x, \beta, w^*) \)
+        quadratic_term = 0.5 * (w_star**2 * A_diag).sum(dim=1, keepdim=True)  # w^T A w
+        linear_term = (b * w_star).sum(dim=1, keepdim=True)  # b^T w
+        max_q = quadratic_term + linear_term
+
+        return w_star, max_q, A_diag, b

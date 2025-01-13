@@ -375,32 +375,28 @@ class AgentDQN:
         max_q = np.nan
 
         if random_action:
-            # Random action: uniform weights scaled by max_u
             weights = torch.rand(num_actions, device=device)
             weights = weights / weights.sum()  # Normalize to sum to 1
             action = weights * self.train_env.max_u  # Scale by max_u
-            return action.cpu().numpy()
+            return action.cpu().numpy(), max_q
 
         if not epsilon:
             epsilon = self.epsilon_by_frame(t)
 
         if np.random.binomial(1, epsilon) == 1:
-            # Random action: uniform weights scaled by max_u
+            # Epsilon-greedy random action
             weights = torch.rand(num_actions, device=device)
             weights = weights / weights.sum()  # Normalize
             action = weights * self.train_env.max_u
         else:
-            # Compute optimal weights \( w^* \) from the policy model
+            # Use policy model to get \( w^* \) and max Q-value
             with torch.no_grad():
-                _, w_star, _ = self.policy_model(state.unsqueeze(0))
-            w_star = torch.clamp(w_star, 0, 1)  # Ensure weights are non-negative
+                w_star, max_q, _, _ = self.policy_model(state.unsqueeze(0))
+            w_star = torch.clamp(w_star, 0, 1)  # Ensure valid weights
             w_star = w_star / w_star.sum()  # Normalize to sum to 1
-            
-            # Scale by \( \beta \) and max_u to generate the control action
-            beta = self.train_env.max_u if np.random.rand() > 0.5 else 0  # Discrete beta
-            action = w_star.squeeze(0) * beta
+            action = w_star.squeeze(0) * self.train_env.max_u
 
-        return action.cpu().numpy()
+        return action.cpu().numpy(), max_q.cpu().item()
 
     def get_max_q_val_for_state(self, state):
         with torch.inference_mode():
@@ -545,7 +541,7 @@ class AgentDQN:
         while (not is_terminated) and (
             epoch_t < train_frames
         ):  # can early stop episode if the frame limit was reached
-            action = self.select_action(self.train_s, self.t, self.num_actions)
+            action, max_q = self.select_action(self.train_s, self.t, self.num_actions)
             s_prime, reward, is_terminated, truncated, info = self.train_env.step(
                 action
             )
@@ -554,6 +550,8 @@ class AgentDQN:
             self.replay_buffer.append(
                 self.train_s, action, reward, s_prime, is_terminated
             )
+
+            self.max_qs.append(max_q)
 
             # Start learning when there's enough data and when we can sample a batch of size BATCH_SIZE
             if (
