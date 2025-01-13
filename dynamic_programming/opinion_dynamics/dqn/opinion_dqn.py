@@ -10,7 +10,6 @@ from typing import List, Dict
 
 import torch.optim as optim
 import torch.nn.functional as F
-from tensorboardX import SummaryWriter
 
 import gym
 
@@ -35,7 +34,6 @@ class AgentDQN:
         save_checkpoints=True,
         logger=None,
         config={},
-        enable_tensorboard_logging=True,
     ) -> None:
         """A DQN agent implementation.
 
@@ -63,7 +61,7 @@ class AgentDQN:
         self.validation_env = validation_env
 
         self.save_checkpoints = save_checkpoints
-        self.logger = logger
+        self.logger = logger or setup_logger("dqn")
 
         # set up path names
         self.experiment_output_folder = experiment_output_folder
@@ -376,21 +374,33 @@ class AgentDQN:
         """
         max_q = np.nan
 
-        # A uniform random policy
         if random_action:
-            action = torch.tensor([[random.randrange(num_actions)]], device=device)
-            return action
+            # Random action: uniform weights scaled by max_u
+            weights = torch.rand(num_actions, device=device)
+            weights = weights / weights.sum()  # Normalize to sum to 1
+            action = weights * self.train_env.max_u  # Scale by max_u
+            return action.cpu().numpy()
 
-        # Epsilon-greedy behavior policy for action selection
         if not epsilon:
             epsilon = self.epsilon_by_frame(t)
 
         if np.random.binomial(1, epsilon) == 1:
-            action = torch.tensor([[random.randrange(num_actions)]], device=device)
+            # Random action: uniform weights scaled by max_u
+            weights = torch.rand(num_actions, device=device)
+            weights = weights / weights.sum()  # Normalize
+            action = weights * self.train_env.max_u
         else:
-            action, max_q = self.get_max_q_and_action(state.unsqueeze(0))
+            # Compute optimal weights \( w^* \) from the policy model
+            with torch.no_grad():
+                _, w_star, _ = self.policy_model(state.unsqueeze(0))
+            w_star = torch.clamp(w_star, 0, 1)  # Ensure weights are non-negative
+            w_star = w_star / w_star.sum()  # Normalize to sum to 1
+            
+            # Scale by \( \beta \) and max_u to generate the control action
+            beta = self.train_env.max_u if np.random.rand() > 0.5 else 0  # Discrete beta
+            action = w_star.squeeze(0) * beta
 
-        return action, max_q
+        return action.cpu().numpy()
 
     def get_max_q_val_for_state(self, state):
         with torch.inference_mode():
@@ -406,12 +416,12 @@ class AgentDQN:
         with torch.inference_mode():
             return self.policy_model(state).max(1)[1].view(1, 1)
 
-    def get_max_q_and_action(self, state):
-        with torch.inference_mode():
-            maxq_and_action = self.policy_model(state).max(1)
-            q_val = maxq_and_action[0].item()
-            action = maxq_and_action[1].view(1, 1)
-            return action, q_val
+    # def get_max_q_and_action(self, state):
+    #     with torch.inference_mode():
+    #         maxq_and_action = self.policy_model(state).max(1)
+    #         q_val = maxq_and_action[0].item()
+    #         action = maxq_and_action[1].view(1, 1)
+    #         return action, q_val
 
     def train(self, train_epochs: int) -> True:
         """The main call for the training loop of the DQN Agent.
@@ -535,7 +545,7 @@ class AgentDQN:
         while (not is_terminated) and (
             epoch_t < train_frames
         ):  # can early stop episode if the frame limit was reached
-            action, max_q = self.select_action(self.train_s, self.t, self.num_actions)
+            action = self.select_action(self.train_s, self.t, self.num_actions)
             s_prime, reward, is_terminated, truncated, info = self.train_env.step(
                 action
             )
@@ -544,8 +554,6 @@ class AgentDQN:
             self.replay_buffer.append(
                 self.train_s, action, reward, s_prime, is_terminated
             )
-
-            self.max_qs.append(max_q)
 
             # Start learning when there's enough data and when we can sample a batch of size BATCH_SIZE
             if (
