@@ -26,3 +26,12 @@ def replace_keys(d, original_key, new_key):
         else:
             new_dict[updated_key] = value
     return new_dict
+
+
+def convert_namespace_to_dict(obj):
+    if isinstance(obj, dict):
+        return {k: convert_namespace_to_dict(v) for k, v in obj.items()}
+    elif hasattr(obj, "__dict__"):
+        return {k: convert_namespace_to_dict(v) for k, v in obj.__dict__.items()}
+    else:
+        return obj

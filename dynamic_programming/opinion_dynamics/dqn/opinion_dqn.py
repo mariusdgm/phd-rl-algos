@@ -1,9 +1,20 @@
+import os, sys
+
+def get_dir_n_levels_up(path, n):
+    # Go up n levels from the given path
+    for _ in range(n):
+        path = os.path.dirname(path)
+    return path
+
+proj_root = get_dir_n_levels_up(os.path.abspath(__file__), 2)
+sys.path.append(proj_root)
+
 import time
 import datetime
 import torch
 import random
 import numpy as np
-import os
+
 from pathlib import Path
 from typing import List, Dict
 

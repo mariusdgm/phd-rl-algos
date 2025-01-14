@@ -16,8 +16,8 @@ from typing import Dict
 from liftoff import parse_opts
 
 
-from utils import my_logging
 from opinion_dqn import AgentDQN
+from utils import my_logging
 from utils.experiment import seed_everything, create_path_to_experiment_folder, build_environment
 from utils.generic import convert_namespace_to_dict
 
@@ -29,7 +29,7 @@ def run(opts: Dict) -> True:
         opts (NameSpace): Configuration to use in the experiment.
 
     Returns:
-        bool: Returns True on experment end.
+        bool: Returns True on experiment end.
     """
 
     try:
@@ -69,8 +69,7 @@ def run(opts: Dict) -> True:
             resume_training_path=path_previous_experiments_outputs,
             save_checkpoints=True,
             logger=logger,
-            config=config,
-            enable_tensorboard_logging=False,
+            config=config
         )
         
         logger.info(
