@@ -1,10 +1,12 @@
 import os, sys
 
+
 def get_dir_n_levels_up(path, n):
     # Go up n levels from the given path
     for _ in range(n):
         path = os.path.dirname(path)
     return path
+
 
 proj_root = get_dir_n_levels_up(os.path.abspath(__file__), 2)
 sys.path.append(proj_root)
@@ -90,7 +92,6 @@ class AgentDQN:
             self.train_stats_file = os.path.join(
                 self.experiment_output_folder, f"{self.experiment_name}_train_stats"
             )
-             
 
         self.config = config
         if self.config:
@@ -216,7 +217,6 @@ class AgentDQN:
             n_step=buffer_settings.get("n_step", 0),
         )
 
-
         self.reward_perception = None
         reward_perception_config = config.get("reward_perception", None)
 
@@ -268,13 +268,11 @@ class AgentDQN:
         if estimator_settings["model"] == "OpinionNet":
             self.policy_model = OpinionNet(
                 self.in_features,
-                self.in_channels,
                 self.num_actions,
                 **estimator_settings["args"],
             )
             self.target_model = OpinionNet(
                 self.in_features,
-                self.in_channels,
                 self.num_actions,
                 **estimator_settings["args"],
             )
@@ -289,20 +287,16 @@ class AgentDQN:
 
         self.logger.info("Initialized newtworks and optimizer.")
 
-    
     def _read_and_init_envs(self):
         """Read dimensions of the input and output of the simulation environment"""
         # returns state as [w, h, channels]
         state_shape = self.train_env.observation_space.shape
 
-        # permute to get batch, channel, w, h shape
-        # specific to minatar
-        self.in_features = (state_shape[2], state_shape[0], state_shape[1])
-        self.in_channels = self.in_features[0]
-        self.num_actions = self.train_env.action_space.n
+        self.in_features = state_shape[0]
+        self.num_actions = self.train_env.action_space.shape[0]
 
-        self.train_s, info = self.train_env.reset()
-        self.env_s, info = self.validation_env.reset()
+        self.train_s = self.train_env.reset()
+        self.env_s = self.validation_env.reset()
 
     def load_models(self, models_load_file):
         checkpoint = torch.load(models_load_file)
@@ -385,29 +379,22 @@ class AgentDQN:
         """
         max_q = np.nan
 
-        if random_action:
-            weights = torch.rand(num_actions, device=device)
-            weights = weights / weights.sum()  # Normalize to sum to 1
-            action = weights * self.train_env.max_u  # Scale by max_u
-            return action.cpu().numpy(), max_q
+        # Handle epsilon-greedy exploration
+        if random_action or (epsilon is not None and np.random.rand() < epsilon):
+            # Random action sampled from action_space
+            action = self.train_env.action_space.sample()
+            return action, max_q
 
-        if not epsilon:
-            epsilon = self.epsilon_by_frame(t)
+        # Exploit: Use the policy model
+        with torch.no_grad():
+            w_star, max_q, _, _ = self.policy_model(
+                state.unsqueeze(0)
+            )  # Batch dimension
+            w_star = torch.clamp(w_star, 0, 1)  # Ensure weights are non-negative
+            w_star = w_star / w_star.sum(dim=1, keepdim=True)  # Normalize to sum to 1
+            action = (w_star.squeeze(0) * self.train_env.max_u).cpu().numpy()  # Scale
 
-        if np.random.binomial(1, epsilon) == 1:
-            # Epsilon-greedy random action
-            weights = torch.rand(num_actions, device=device)
-            weights = weights / weights.sum()  # Normalize
-            action = weights * self.train_env.max_u
-        else:
-            # Use policy model to get \( w^* \) and max Q-value
-            with torch.no_grad():
-                w_star, max_q, _, _ = self.policy_model(state.unsqueeze(0))
-            w_star = torch.clamp(w_star, 0, 1)  # Ensure valid weights
-            w_star = w_star / w_star.sum()  # Normalize to sum to 1
-            action = w_star.squeeze(0) * self.train_env.max_u
-
-        return action.cpu().numpy(), max_q.cpu().item()
+        return action, max_q.item()
 
     def get_max_q_val_for_state(self, state):
         with torch.inference_mode():
@@ -530,7 +517,6 @@ class AgentDQN:
             epoch_time,
         )
 
-   
         return epoch_stats
 
     def train_episode(self, epoch_t: int, train_frames: int):
@@ -578,7 +564,6 @@ class AgentDQN:
                     self.policy_model_update_counter += 1
                     policy_trained_times += 1
 
-         
                 # Update the target network only after some number of policy network updates
                 if (
                     self.policy_model_update_counter > 0
@@ -855,8 +840,6 @@ class AgentDQN:
         self.optimizer.step()
 
         return loss.item()
-
-
 
 
 def main():

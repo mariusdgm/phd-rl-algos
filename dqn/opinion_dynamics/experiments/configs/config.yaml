@@ -1,0 +1,3 @@
+estimator:
+  args_:
+    lin_hidden_out_size: [32]

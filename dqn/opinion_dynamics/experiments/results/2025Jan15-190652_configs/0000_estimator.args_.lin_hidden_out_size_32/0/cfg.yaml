@@ -21,25 +21,23 @@ environment:
 epochs_to_train: 2
 estimator:
   args_:
-    conv_hidden_out_size: 32
-    lin_hidden_out_size: 128
+    lin_hidden_out_size: 32
   model: OpinionNet
 experiment: opinion_agent_dqn
 experiment_arguments:
   estimator:
     args_:
-      conv_hidden_out_size: 32
-      lin_hidden_out_size: 128
-full_title: 2025Jan14-225523_configs_estimator.args_.lin_hidden_out_size=128; estimator.args_.conv_hidden_out_size=32
+      lin_hidden_out_size: 32
+full_title: 2025Jan15-190652_configs_estimator.args_.lin_hidden_out_size=32
 optim:
   args_:
     eps: 0.0003125
     lr: 0.00025
   name: Adam
-out_dir: .\results\2025Jan14-225523_configs\0000_estimator.args_.lin_hidden_out_size_128__estimator.args_.conv_hidden_out_size_32\0
+out_dir: .\results\2025Jan15-190652_configs\0000_estimator.args_.lin_hidden_out_size_32\0
 replay_buffer:
   action_dim: 1
   max_size: 100000
   n_step: 0
 run_id: 0
-title: estimator.args_.lin_hidden_out_size=128; estimator.args_.conv_hidden_out_size=32
+title: estimator.args_.lin_hidden_out_size=32
