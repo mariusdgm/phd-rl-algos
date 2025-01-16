@@ -26,11 +26,11 @@ import torch.nn.functional as F
 
 import gym
 
-from dqn.replay_buffer import ReplayBuffer
-from dqn.utils.experiment import seed_everything
-from dqn.utils.my_logging import setup_logger
-from dqn.utils.generic import merge_dictionaries, replace_keys
-from dqn.models import OpinionNet
+from opinion_dynamics.replay_buffer import ReplayBuffer
+from opinion_dynamics.utils.experiment import seed_everything
+from opinion_dynamics.utils.my_logging import setup_logger
+from opinion_dynamics.utils.generic import merge_dictionaries, replace_keys
+from opinion_dynamics.models import OpinionNet
 
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 device = "cpu"
@@ -289,14 +289,11 @@ class AgentDQN:
 
     def _read_and_init_envs(self):
         """Read dimensions of the input and output of the simulation environment"""
-        # returns state as [w, h, channels]
-        state_shape = self.train_env.observation_space.shape
-
-        self.in_features = state_shape[0]
+        self.in_features = self.train_env.observation_space.shape[0]
         self.num_actions = self.train_env.action_space.shape[0]
 
-        self.train_s = self.train_env.reset()
-        self.env_s = self.validation_env.reset()
+        self.train_s, _ = self.train_env.reset()
+        self.env_s, _ = self.validation_env.reset()
 
     def load_models(self, models_load_file):
         checkpoint = torch.load(models_load_file)
@@ -601,7 +598,7 @@ class AgentDQN:
         self.losses = []
         self.max_qs = []
 
-        self.train_s, info = self.train_env.reset()
+        self.train_s, _ = self.train_env.reset()
         self.train_s = torch.tensor(self.train_s, device=device).float()
 
     def display_training_epoch_info(self, stats):
@@ -809,32 +806,40 @@ class AgentDQN:
         """Compute the loss with TD learning."""
         states, actions, rewards, next_states, dones = sample
 
+        # Convert inputs to tensors
         states = torch.stack(states, dim=0)
-        actions = torch.LongTensor(actions).unsqueeze(1)
-        rewards = torch.Tensor(rewards).unsqueeze(1)
+        actions = torch.FloatTensor(actions)  # Continuous actions
+        rewards = torch.FloatTensor(rewards).unsqueeze(1)
         next_states = torch.stack(next_states, dim=0)
-        dones = torch.Tensor(dones).unsqueeze(1)
+        dones = torch.FloatTensor(dones).unsqueeze(1)
 
         if self.reward_perception:
             rewards = rewards + self.reward_perception["shift"]
 
         self.policy_model.train()
 
-        q_values = self.policy_model(states)
-        selected_q_value = q_values.gather(1, actions)
+        # Forward pass through the policy model
+        _, q_values, _, _ = self.policy_model(states)
 
-        next_q_values = self.target_model(next_states).detach()
-        next_q_values = next_q_values.max(1)[0].unsqueeze(1)
+        # Compute weighted Q-values for continuous actions
+        selected_q_value = (q_values * actions).sum(dim=1, keepdim=True)
 
-        expected_q_value = rewards + self.gamma * (
-            next_q_values * (1 - dones) + (-1 / (1 - self.gamma)) * dones
-        )
+        # Compute target Q-values using the target model
+        _, next_q_values, _, _ = self.target_model(next_states)
+        max_next_q_values = next_q_values.max(dim=1, keepdim=True)[0]
+
+        # TD target
+        expected_q_value = rewards + self.gamma * max_next_q_values * (1 - dones)
+
+        # Compute loss
         if self.loss_function == "mse_loss":
             loss = F.mse_loss(selected_q_value, expected_q_value)
+        elif self.loss_function == "smooth_l1_loss":
+            loss = F.smooth_l1_loss(selected_q_value, expected_q_value)
+        else:
+            raise ValueError(f"Unsupported loss function: {self.loss_function}")
 
-        # if self.loss_function == "smooth_l1":
-        #     loss = F.smooth_l1_loss(selected_q_value, expected_q_value)
-
+        # Backpropagation
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
