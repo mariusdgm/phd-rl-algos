@@ -113,6 +113,9 @@ class AgentDQN:
         # check that all paths were provided and that the files can be found
         if resume_training_path:
             self.load_training_state(resume_training_path)
+          
+        self.betas = [0, 1]  
+        self.num_betas = len(self.betas)
 
     def _make_model_checkpoint_file_path(self, experiment_output_folder, epoch_cnt=0):
         """Dynamically build the path where to save the model checkpoint."""
@@ -354,29 +357,25 @@ class AgentDQN:
     def select_action(
         self,
         state: torch.Tensor,
-        t: int,
-        num_actions: int,
         epsilon: float = None,
         random_action: bool = False,
     ):
-        """Select an action with a greedy epsilon strategy.
+        """
+        Select an action with a greedy epsilon strategy.
 
         Args:
-            state (torch.Tensor): The current state
-            t (int): the frame number, used in deciding if the selection is done randomly (greedy epsilon)
-            num_actions (int): The number of available actions
-            epsilon (float, optional): What number to use for the epsilon selection. If None, then will be computed as a function of t.
-                                     Defaults to None.
-            random_action (bool, optional): Wether to select a random action without making a prediction through the model.
-                                         Defaults to False.
+            state (torch.Tensor): Current state.
+            beta_idx (int): Index of the current \(\beta\).
+            epsilon (float, optional): Epsilon for exploration. Defaults to None.
+            random_action (bool, optional): Whether to select a random action. Defaults to False.
 
         Returns:
-            Tuple[int, float]: Returns a tuple. The first element is the selected action (either randomly or by making a model prediction).
-                            The second element is the maximum Q value returned by the model. If the random action was selected, the maximum Q is np.Nan.
+            Tuple[torch.Tensor, float]: The optimal weights and the Q-value.
         """
+        beta_idx = np.random.randint(0, self.num_betas)
+        
         max_q = np.nan
 
-        # Handle epsilon-greedy exploration
         if random_action or (epsilon is not None and np.random.rand() < epsilon):
             # Random action sampled from action_space
             action = self.train_env.action_space.sample()
@@ -385,10 +384,10 @@ class AgentDQN:
         # Exploit: Use the policy model
         with torch.no_grad():
             w_star, max_q, _, _ = self.policy_model(
-                state.unsqueeze(0)
-            )  # Batch dimension
+                state.unsqueeze(0), torch.tensor([beta_idx], device=device)
+            )
             w_star = torch.clamp(w_star, 0, 1)  # Ensure weights are non-negative
-            w_star = w_star / w_star.sum(dim=1, keepdim=True)  # Normalize to sum to 1
+            w_star = w_star / w_star.sum(dim=1, keepdim=True)  # Normalize
             action = (w_star.squeeze(0) * self.train_env.max_u).cpu().numpy()  # Scale
 
         return action, max_q.item()
