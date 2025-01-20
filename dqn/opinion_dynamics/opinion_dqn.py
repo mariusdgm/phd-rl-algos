@@ -113,8 +113,8 @@ class AgentDQN:
         # check that all paths were provided and that the files can be found
         if resume_training_path:
             self.load_training_state(resume_training_path)
-          
-        self.betas = [0, 1]  
+
+        self.betas = [0, 1]
         self.num_betas = len(self.betas)
 
     def _make_model_checkpoint_file_path(self, experiment_output_folder, epoch_cnt=0):
@@ -355,42 +355,56 @@ class AgentDQN:
         self.logger.debug(f"Training status saved at t = {self.t}")
 
     def select_action(
-        self,
-        state: torch.Tensor,
-        epsilon: float = None,
-        random_action: bool = False,
+        self, state: torch.Tensor, epsilon: float = None, random_action: bool = False
     ):
         """
-        Select an action with a greedy epsilon strategy.
+        Select an action by evaluating the Q-function over the \(\beta\) grid.
 
         Args:
             state (torch.Tensor): Current state.
-            beta_idx (int): Index of the current \(\beta\).
             epsilon (float, optional): Epsilon for exploration. Defaults to None.
             random_action (bool, optional): Whether to select a random action. Defaults to False.
 
         Returns:
-            Tuple[torch.Tensor, float]: The optimal weights and the Q-value.
+            Tuple[torch.Tensor, float]: The optimal weights and the maximum Q-value.
         """
-        beta_idx = np.random.randint(0, self.num_betas)
-        
         max_q = np.nan
 
         if random_action or (epsilon is not None and np.random.rand() < epsilon):
-            # Random action sampled from action_space
+            # Random action: Uniformly select weights within the valid range
             action = self.train_env.action_space.sample()
             return action, max_q
 
         # Exploit: Use the policy model
         with torch.no_grad():
-            w_star, max_q, _, _ = self.policy_model(
-                state.unsqueeze(0), torch.tensor([beta_idx], device=device)
-            )
-            w_star = torch.clamp(w_star, 0, 1)  # Ensure weights are non-negative
-            w_star = w_star / w_star.sum(dim=1, keepdim=True)  # Normalize
-            action = (w_star.squeeze(0) * self.train_env.max_u).cpu().numpy()  # Scale
+            q_vals, A_diag, b = self.policy_model(state.unsqueeze(0))
 
-        return action, max_q.item()
+            # Compute \( w^* = -A^{-1} b \) for each \(\beta\)
+            A_inv = 1.0 / A_diag  # Inverse of diagonal A
+            w_star = -A_inv * b  # Shape: (batch_size, nr_betas, nr_agents)
+
+            # Normalize \( w^* \) to satisfy \(\sum w_i = 1\)
+            w_star = torch.clamp(w_star, 0, 1)
+            w_star = w_star / w_star.sum(dim=2, keepdim=True)
+
+            # Scale \( w^* \) to the valid range [0, env.u_max]
+            w_star_scaled = w_star * self.train_env.u_max
+
+            # Explicit computation of \( Q(x, \beta, w^*) = q(x, \beta) - \frac{1}{2} b^T A^{-1} b \)
+            b_T = b.transpose(
+                1, 2
+            )  # Transpose b to have shape (batch_size, nr_betas, 1)
+            A_inv_b = A_inv * b  # Element-wise multiplication for diagonal A
+            b_A_inv_b = (
+                torch.bmm(b_T, A_inv_b.unsqueeze(2)).squeeze(2).squeeze(1)
+            )  # Quadratic form
+            q_full = q_vals - 0.5 * b_A_inv_b
+
+            # Select the best \(\beta\)
+            max_q, beta_idx = q_full.max(dim=1)
+            best_w = w_star_scaled[0, beta_idx]  # Scale the best \( w^* \)
+
+        return best_w.cpu().numpy(), max_q.item()
 
     def get_max_q_val_for_state(self, state):
         with torch.inference_mode():
@@ -801,7 +815,7 @@ class AgentDQN:
             + str(stats["epoch_time"])
         )
 
-    def model_learn(self, sample):
+    def model_learn(self, sample, debug=True):
         """Compute the loss with TD learning."""
         states, actions, rewards, next_states, dones = sample
 
@@ -818,14 +832,65 @@ class AgentDQN:
         self.policy_model.train()
 
         # Forward pass through the policy model
-        _, q_values, _, _ = self.policy_model(states)
+        q_vals, A_diag, b = self.policy_model(states)
 
-        # Compute weighted Q-values for continuous actions
-        selected_q_value = (q_values * actions).sum(dim=1, keepdim=True)
+        # Debug logs for tensor shapes
+        if debug:
+            print(f"q_vals shape: {q_vals.shape}")  # Expected: (batch_size, nr_betas)
+            print(f"A_diag shape: {A_diag.shape}")  # Expected: (batch_size, nr_betas, nr_agents)
+            print(f"b shape: {b.shape}")  # Expected: (batch_size, nr_betas, nr_agents)
 
-        # Compute target Q-values using the target model
-        _, next_q_values, _, _ = self.target_model(next_states)
-        max_next_q_values = next_q_values.max(dim=1, keepdim=True)[0]
+        A_inv = 1.0 / A_diag  # Inverse of diagonal A
+        if debug:
+            print(f"A_inv shape: {A_inv.shape}")  # Expected: Same as A_diag
+
+        w_star = -A_inv * b  # Compute \( w^* \)
+        if debug:
+            print(f"w_star shape: {w_star.shape}")  # Expected: (batch_size, nr_betas, nr_agents)
+
+        # Normalize \( w^* \)
+        w_star = torch.clamp(w_star, 0, 1)
+        w_star = w_star / w_star.sum(dim=2, keepdim=True)
+
+        # Compute \( b^T A^{-1} b \)
+        b_T = b.transpose(1, 2)  # Shape: (batch_size, nr_agents, nr_betas)
+        if debug:
+            print(f"b_T shape: {b_T.shape}")  # Transposed b
+
+        A_inv_b = A_inv * b  # Shape: (batch_size, nr_agents, nr_betas)
+        if debug:
+            print(f"A_inv_b shape: {A_inv_b.shape}")
+
+        b_A_inv_b = torch.sum(b_T * A_inv_b, dim=1)  # Shape: (batch_size, nr_betas)
+        if debug:
+            print(f"b_A_inv_b shape: {b_A_inv_b.shape}")
+
+        # Compute the Q-values for selected actions
+        q_full = q_vals - 0.5 * b_A_inv_b  # Q-values for all \(\beta\)
+        if debug:
+            print(f"q_full shape: {q_full.shape}")  # Expected: (batch_size, nr_betas)
+        selected_q_value = (q_full * actions).sum(dim=1, keepdim=True)
+
+        # Forward pass through the target model for next states
+        next_q_vals, next_A_diag, next_b = self.target_model(next_states)
+        next_A_inv = 1.0 / next_A_diag
+
+        # Compute \( b^T A^{-1} b \) for the target model
+        next_b_T = next_b.transpose(1, 2)  # Shape: (batch_size, nr_agents, nr_betas)
+        next_A_inv_b = next_A_inv * next_b  # Element-wise multiplication
+        if debug:
+            print(f"next_A_inv_b shape: {next_A_inv_b.shape}")  # Expected: (batch_size, nr_betas, nr_agents)
+
+        # Collapse quadratic term along the agents dimension
+        next_b_A_inv_b = torch.sum(next_b_T * next_A_inv_b, dim=1)  # Shape: (batch_size, nr_betas)
+        if debug:
+            print(f"next_b_A_inv_b shape: {next_b_A_inv_b.shape}")
+
+        # Compute the Q-values for next states
+        next_q_full = next_q_vals - 0.5 * next_b_A_inv_b  # Shape: (batch_size, nr_betas)
+        if debug:
+            print(f"next_q_full shape: {next_q_full.shape}")
+        max_next_q_values = next_q_full.max(dim=1, keepdim=True)[0]
 
         # TD target
         expected_q_value = rewards + self.gamma * max_next_q_values * (1 - dones)
@@ -844,7 +909,6 @@ class AgentDQN:
         self.optimizer.step()
 
         return loss.item()
-
 
 def main():
     pass
