@@ -368,43 +368,40 @@ class AgentDQN:
         Returns:
             Tuple[torch.Tensor, float]: The optimal weights and the maximum Q-value.
         """
-        max_q = np.nan
+        max_q = None
 
         if random_action or (epsilon is not None and np.random.rand() < epsilon):
             # Random action: Uniformly select weights within the valid range
             action = self.train_env.action_space.sample()
             return action, max_q
 
-        # Exploit: Use the policy model
         with torch.no_grad():
             q_vals, A_diag, b = self.policy_model(state.unsqueeze(0))
 
-            # Compute \( w^* = -A^{-1} b \) for each \(\beta\)
             A_inv = 1.0 / A_diag  # Inverse of diagonal A
-            w_star = -A_inv * b  # Shape: (batch_size, nr_betas, nr_agents)
+            w_star = -A_inv * b  # Compute \( w^* \)
 
-            # Normalize \( w^* \) to satisfy \(\sum w_i = 1\)
+            # Normalize \( w^* \)
             w_star = torch.clamp(w_star, 0, 1)
             w_star = w_star / w_star.sum(dim=2, keepdim=True)
 
-            # Scale \( w^* \) to the valid range [0, env.u_max]
-            w_star_scaled = w_star * self.train_env.u_max
+            # Scale \( w^* \) to the valid range [0, env.max_u]
+            w_star_scaled = w_star * self.train_env.max_u
 
-            # Explicit computation of \( Q(x, \beta, w^*) = q(x, \beta) - \frac{1}{2} b^T A^{-1} b \)
-            b_T = b.transpose(
-                1, 2
-            )  # Transpose b to have shape (batch_size, nr_betas, 1)
-            A_inv_b = A_inv * b  # Element-wise multiplication for diagonal A
-            b_A_inv_b = (
-                torch.bmm(b_T, A_inv_b.unsqueeze(2)).squeeze(2).squeeze(1)
-            )  # Quadratic form
+            # Compute \( b^T A^{-1} b \)
+            b_T = b.transpose(1, 2)  # Shape: (batch_size, nr_agents, nr_betas)
+            A_inv_b = A_inv * b  # Element-wise multiplication
+            A_inv_b = A_inv_b.transpose(1, 2)  # Ensure shape matches for bmm
+            b_A_inv_b = torch.bmm(b_T, A_inv_b).squeeze(2)  # Shape: (batch_size, nr_betas)
+
+            # Compute the Q-values
             q_full = q_vals - 0.5 * b_A_inv_b
+            max_q, beta_idx = q_full.max(dim=1)  # max_q is now a tensor of shape (batch_size,)
 
-            # Select the best \(\beta\)
-            max_q, beta_idx = q_full.max(dim=1)
-            best_w = w_star_scaled[0, beta_idx]  # Scale the best \( w^* \)
+            # Select the best \( w^* \) for each batch element
+            best_w = w_star_scaled[torch.arange(w_star_scaled.size(0)), beta_idx]  # Shape: (batch_size, nr_agents)
 
-        return best_w.cpu().numpy(), max_q.item()
+        return best_w.cpu().numpy(), max_q.cpu().numpy()  # Return max_q as a numpy array
 
     def get_max_q_val_for_state(self, state):
         with torch.inference_mode():
@@ -545,54 +542,36 @@ class AgentDQN:
         target_trained_times = 0
 
         is_terminated = False
-        while (not is_terminated) and (
-            epoch_t < train_frames
-        ):  # can early stop episode if the frame limit was reached
-            action, max_q = self.select_action(self.train_s, self.t, self.num_actions)
-            s_prime, reward, is_terminated, truncated, info = self.train_env.step(
-                action
-            )
+        while (not is_terminated) and (epoch_t < train_frames):
+            # Corrected call to select_action
+            action, max_q = self.select_action(self.train_s, epsilon=self.epsilon_by_frame(self.t))
+            s_prime, reward, is_terminated, truncated, info = self.train_env.step(action)
             s_prime = torch.tensor(s_prime, device=device).float()
 
-            self.replay_buffer.append(
-                self.train_s, action, reward, s_prime, is_terminated
-            )
-
+            self.replay_buffer.append(self.train_s, action, reward, s_prime, is_terminated)
             self.max_qs.append(max_q)
 
-            # Start learning when there's enough data and when we can sample a batch of size BATCH_SIZE
-            if (
-                self.t > self.replay_start_size
-                and len(self.replay_buffer) >= self.batch_size
-            ):
-                # Train every training_freq number of frames
+            # Train policy model
+            if self.t > self.replay_start_size and len(self.replay_buffer) >= self.batch_size:
                 if self.t % self.training_freq == 0:
                     sample = self.replay_buffer.sample(self.batch_size)
                     loss_val = self.model_learn(sample)
-
                     self.losses.append(loss_val)
                     self.policy_model_update_counter += 1
                     policy_trained_times += 1
 
-                # Update the target network only after some number of policy network updates
-                if (
-                    self.policy_model_update_counter > 0
-                    and self.policy_model_update_counter % self.target_model_update_freq
-                    == 0
-                ):
+                if (self.policy_model_update_counter > 0 and
+                    self.policy_model_update_counter % self.target_model_update_freq == 0):
                     self.target_model.load_state_dict(self.policy_model.state_dict())
                     target_trained_times += 1
 
             self.current_episode_reward += reward
-
             self.t += 1
             epoch_t += 1
             self.ep_frames += 1
 
-            # Continue the process
             self.train_s = s_prime
 
-        # end of episode, return episode statistics:
         return (
             is_terminated,
             epoch_t,
@@ -775,27 +754,19 @@ class AgentDQN:
         ep_frames = 0
         max_qs = []
 
-        # Initialize the environment and start state
         s, info = self.validation_env.reset()
         s = torch.tensor(s, device=device).float()
 
         is_terminated = False
         while not is_terminated:
-            action, max_q = self.select_action(
-                s, self.t, self.num_actions, epsilon=self.validation_epsilon
-            )
-            s_prime, reward, is_terminated, truncated, info = self.validation_env.step(
-                action
-            )
+            # Corrected call to select_action
+            action, max_q = self.select_action(s, epsilon=self.validation_epsilon)
+            s_prime, reward, is_terminated, truncated, info = self.validation_env.step(action)
             s_prime = torch.tensor(s_prime, device=device).float()
 
             max_qs.append(max_q)
-
             current_episode_reward += reward
-
             ep_frames += 1
-
-            # Continue the process
             s = s_prime
 
         return (current_episode_reward, ep_frames, max_qs)
@@ -815,7 +786,7 @@ class AgentDQN:
             + str(stats["epoch_time"])
         )
 
-    def model_learn(self, sample, debug=True):
+    def model_learn(self, sample, debug=False):
         """Compute the loss with TD learning."""
         states, actions, rewards, next_states, dones = sample
 
@@ -837,7 +808,9 @@ class AgentDQN:
         # Debug logs for tensor shapes
         if debug:
             print(f"q_vals shape: {q_vals.shape}")  # Expected: (batch_size, nr_betas)
-            print(f"A_diag shape: {A_diag.shape}")  # Expected: (batch_size, nr_betas, nr_agents)
+            print(
+                f"A_diag shape: {A_diag.shape}"
+            )  # Expected: (batch_size, nr_betas, nr_agents)
             print(f"b shape: {b.shape}")  # Expected: (batch_size, nr_betas, nr_agents)
 
         A_inv = 1.0 / A_diag  # Inverse of diagonal A
@@ -846,7 +819,9 @@ class AgentDQN:
 
         w_star = -A_inv * b  # Compute \( w^* \)
         if debug:
-            print(f"w_star shape: {w_star.shape}")  # Expected: (batch_size, nr_betas, nr_agents)
+            print(
+                f"w_star shape: {w_star.shape}"
+            )  # Expected: (batch_size, nr_betas, nr_agents)
 
         # Normalize \( w^* \)
         w_star = torch.clamp(w_star, 0, 1)
@@ -879,15 +854,21 @@ class AgentDQN:
         next_b_T = next_b.transpose(1, 2)  # Shape: (batch_size, nr_agents, nr_betas)
         next_A_inv_b = next_A_inv * next_b  # Element-wise multiplication
         if debug:
-            print(f"next_A_inv_b shape: {next_A_inv_b.shape}")  # Expected: (batch_size, nr_betas, nr_agents)
+            print(
+                f"next_A_inv_b shape: {next_A_inv_b.shape}"
+            )  # Expected: (batch_size, nr_betas, nr_agents)
 
         # Collapse quadratic term along the agents dimension
-        next_b_A_inv_b = torch.sum(next_b_T * next_A_inv_b, dim=1)  # Shape: (batch_size, nr_betas)
+        next_b_A_inv_b = torch.sum(
+            next_b_T * next_A_inv_b, dim=1
+        )  # Shape: (batch_size, nr_betas)
         if debug:
             print(f"next_b_A_inv_b shape: {next_b_A_inv_b.shape}")
 
         # Compute the Q-values for next states
-        next_q_full = next_q_vals - 0.5 * next_b_A_inv_b  # Shape: (batch_size, nr_betas)
+        next_q_full = (
+            next_q_vals - 0.5 * next_b_A_inv_b
+        )  # Shape: (batch_size, nr_betas)
         if debug:
             print(f"next_q_full shape: {next_q_full.shape}")
         max_next_q_values = next_q_full.max(dim=1, keepdim=True)[0]
@@ -909,6 +890,7 @@ class AgentDQN:
         self.optimizer.step()
 
         return loss.item()
+
 
 def main():
     pass
