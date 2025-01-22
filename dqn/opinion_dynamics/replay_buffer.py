@@ -1,3 +1,4 @@
+import torch
 from collections import deque
 import numpy as np
 import random
@@ -15,26 +16,67 @@ class ReplayBuffer:
     def __len__(self):
         return len(self.buffer)
 
+    def _normalize_state(self, state):
+        """
+        Ensure that states are 2D tensors with shape (1, state_dim).
+        If the state is 1D, unsqueeze it to make it 2D.
+        """
+        if isinstance(state, torch.Tensor):
+            state = state.float()
+        else:
+            state = torch.tensor(state, dtype=torch.float32)
+
+        if state.ndim == 1:  # If 1D, add a batch dimension
+            state = state.unsqueeze(0)
+        return state
+
     def append(self, state, action, reward, next_state, done):
+        """
+        Append a transition to the replay buffer.
+        Normalize the state and next_state tensors before storing.
+        """
+        # Ensure consistent dimensionality for states and next_states
+        state = np.expand_dims(state, axis=0) if state.ndim == 1 else state
+        next_state = np.expand_dims(next_state, axis=0) if next_state.ndim == 1 else next_state
         self.buffer.append((state, action, reward, next_state, done))
 
     def sample(self, batch_size):
+        """
+        Sample a batch of transitions from the replay buffer.
+        Ensure that the states and next_states are stacked into tensors.
+        """
         if batch_size > len(self):
             raise ValueError("Not enough transitions to sample")
 
         samples = random.sample(self.buffer, batch_size)
         states, actions, rewards, next_states, dones = zip(*samples)
 
+        # Stack all states, next states, and other tensors for consistent batching
+        states = torch.tensor(np.concatenate(states, axis=0), dtype=torch.float32)
+        next_states = torch.tensor(np.concatenate(next_states, axis=0), dtype=torch.float32)
+        actions = torch.tensor(actions, dtype=torch.float32)
+        rewards = torch.tensor(rewards, dtype=torch.float32).unsqueeze(1)
+        dones = torch.tensor(dones, dtype=torch.float32).unsqueeze(1)
+        
+        print(f"States: {states.shape}")
+        print(f"Actions: {actions.shape}")
+        print(f"Rewards: {rewards.shape}")
+        print(f"Next States: {next_states.shape}")
+        print(f"Dones: {dones.shape}")
+
         return states, actions, rewards, next_states, dones
 
     def sample_n_step(self, batch_size, stride=1):
+        """
+        Sample N-step transitions for bootstrapped updates.
+        """
         if batch_size > len(self):
             raise ValueError("Not enough transitions to sample")
 
         transitions = []
         for _ in range(batch_size):
-            start_idx = random.randint(0, len(self) - self.n_step*stride - 1)
-            end_idx = start_idx + self.n_step*stride
+            start_idx = random.randint(0, len(self) - self.n_step * stride - 1)
+            end_idx = start_idx + self.n_step * stride
             samples = self.buffer[start_idx:end_idx:stride]
 
             state, _, _, _, _ = samples[0]
@@ -42,12 +84,19 @@ class ReplayBuffer:
 
             reward = 0
             for i in range(self.n_step):
-                _, action, r, _, _ = samples[i*stride]
+                _, action, r, _, _ = samples[i * stride]
                 reward += r * pow(0.99, i)
 
             transitions.append((state, action, reward, next_state, done))
 
         states, actions, rewards, next_states, dones = zip(*transitions)
+
+        # Normalize and stack outputs
+        states = torch.cat([self._normalize_state(s) for s in states], dim=0)
+        next_states = torch.cat([self._normalize_state(s) for s in next_states], dim=0)
+        actions = torch.tensor(actions, dtype=torch.float32)
+        rewards = torch.tensor(rewards, dtype=torch.float32)
+        dones = torch.tensor(dones, dtype=torch.float32)
 
         return states, actions, rewards, next_states, dones
 

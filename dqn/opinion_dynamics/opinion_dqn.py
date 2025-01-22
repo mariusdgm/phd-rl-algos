@@ -376,8 +376,14 @@ class AgentDQN:
             return action, max_q
 
         with torch.no_grad():
+            
             q_vals, A_diag, b = self.policy_model(state.unsqueeze(0))
 
+            # Debug: Log shapes
+            print(f"q_vals shape: {q_vals.shape}")
+            print(f"A_diag shape: {A_diag.shape}")
+            print(f"b shape: {b.shape}")
+            
             A_inv = 1.0 / A_diag  # Inverse of diagonal A
             w_star = -A_inv * b  # Compute \( w^* \)
 
@@ -547,6 +553,8 @@ class AgentDQN:
             action, max_q = self.select_action(self.train_s, epsilon=self.epsilon_by_frame(self.t))
             s_prime, reward, is_terminated, truncated, info = self.train_env.step(action)
             s_prime = torch.tensor(s_prime, device=device).float()
+            if s_prime.ndim == 1:  # Expand to 2D if necessary
+                s_prime = s_prime.unsqueeze(0)
 
             self.replay_buffer.append(self.train_s, action, reward, s_prime, is_terminated)
             self.max_qs.append(max_q)
@@ -591,7 +599,10 @@ class AgentDQN:
         self.max_qs = []
 
         self.train_s, _ = self.train_env.reset()
+        print(f"Initial state shape: {self.train_s.shape}")
         self.train_s = torch.tensor(self.train_s, device=device).float()
+        if self.train_s.ndim == 1:
+            self.train_s = self.train_s.unsqueeze(0)
 
     def display_training_epoch_info(self, stats):
         self.logger.info(
@@ -786,15 +797,16 @@ class AgentDQN:
             + str(stats["epoch_time"])
         )
 
-    def model_learn(self, sample, debug=False):
+    def model_learn(self, sample, debug=True):
         """Compute the loss with TD learning."""
         states, actions, rewards, next_states, dones = sample
 
-        # Convert inputs to tensors
-        states = torch.stack(states, dim=0)
-        actions = torch.FloatTensor(actions)  # Continuous actions
+        # Ensure states are at least 2D before stacking
+        states = torch.stack([s.unsqueeze(0) if s.ndim == 1 else s for s in states], dim=0)
+        next_states = torch.stack([s.unsqueeze(0) if s.ndim == 1 else s for s in next_states], dim=0)
+
+        actions = torch.FloatTensor(actions)
         rewards = torch.FloatTensor(rewards).unsqueeze(1)
-        next_states = torch.stack(next_states, dim=0)
         dones = torch.FloatTensor(dones).unsqueeze(1)
 
         if self.reward_perception:
@@ -807,76 +819,33 @@ class AgentDQN:
 
         # Debug logs for tensor shapes
         if debug:
-            print(f"q_vals shape: {q_vals.shape}")  # Expected: (batch_size, nr_betas)
-            print(
-                f"A_diag shape: {A_diag.shape}"
-            )  # Expected: (batch_size, nr_betas, nr_agents)
-            print(f"b shape: {b.shape}")  # Expected: (batch_size, nr_betas, nr_agents)
+            print(f"q_vals shape: {q_vals.shape}")
+            print(f"A_diag shape: {A_diag.shape}")
+            print(f"b shape: {b.shape}")
 
-        A_inv = 1.0 / A_diag  # Inverse of diagonal A
-        if debug:
-            print(f"A_inv shape: {A_inv.shape}")  # Expected: Same as A_diag
+        A_inv = 1.0 / A_diag
+        w_star = -A_inv * b
 
-        w_star = -A_inv * b  # Compute \( w^* \)
-        if debug:
-            print(
-                f"w_star shape: {w_star.shape}"
-            )  # Expected: (batch_size, nr_betas, nr_agents)
-
-        # Normalize \( w^* \)
         w_star = torch.clamp(w_star, 0, 1)
         w_star = w_star / w_star.sum(dim=2, keepdim=True)
 
-        # Compute \( b^T A^{-1} b \)
-        b_T = b.transpose(1, 2)  # Shape: (batch_size, nr_agents, nr_betas)
-        if debug:
-            print(f"b_T shape: {b_T.shape}")  # Transposed b
+        b_T = b.transpose(2, 1)
+        A_inv_b = A_inv * b  # Element-wise multiplication
+        b_A_inv_b = torch.sum(b_T * A_inv_b, dim=2)  # Shape: (batch_size, nr_betas)
 
-        A_inv_b = A_inv * b  # Shape: (batch_size, nr_agents, nr_betas)
-        if debug:
-            print(f"A_inv_b shape: {A_inv_b.shape}")
-
-        b_A_inv_b = torch.sum(b_T * A_inv_b, dim=1)  # Shape: (batch_size, nr_betas)
-        if debug:
-            print(f"b_A_inv_b shape: {b_A_inv_b.shape}")
-
-        # Compute the Q-values for selected actions
-        q_full = q_vals - 0.5 * b_A_inv_b  # Q-values for all \(\beta\)
-        if debug:
-            print(f"q_full shape: {q_full.shape}")  # Expected: (batch_size, nr_betas)
+        q_full = q_vals - 0.5 * b_A_inv_b
         selected_q_value = (q_full * actions).sum(dim=1, keepdim=True)
 
-        # Forward pass through the target model for next states
         next_q_vals, next_A_diag, next_b = self.target_model(next_states)
         next_A_inv = 1.0 / next_A_diag
-
-        # Compute \( b^T A^{-1} b \) for the target model
-        next_b_T = next_b.transpose(1, 2)  # Shape: (batch_size, nr_agents, nr_betas)
-        next_A_inv_b = next_A_inv * next_b  # Element-wise multiplication
-        if debug:
-            print(
-                f"next_A_inv_b shape: {next_A_inv_b.shape}"
-            )  # Expected: (batch_size, nr_betas, nr_agents)
-
-        # Collapse quadratic term along the agents dimension
-        next_b_A_inv_b = torch.sum(
-            next_b_T * next_A_inv_b, dim=1
-        )  # Shape: (batch_size, nr_betas)
-        if debug:
-            print(f"next_b_A_inv_b shape: {next_b_A_inv_b.shape}")
-
-        # Compute the Q-values for next states
-        next_q_full = (
-            next_q_vals - 0.5 * next_b_A_inv_b
-        )  # Shape: (batch_size, nr_betas)
-        if debug:
-            print(f"next_q_full shape: {next_q_full.shape}")
+        next_b_T = next_b.transpose(1, 2)
+        next_A_inv_b = next_A_inv * next_b
+        next_b_A_inv_b = torch.sum(next_b_T * next_A_inv_b, dim=1)
+        next_q_full = next_q_vals - 0.5 * next_b_A_inv_b
         max_next_q_values = next_q_full.max(dim=1, keepdim=True)[0]
 
-        # TD target
         expected_q_value = rewards + self.gamma * max_next_q_values * (1 - dones)
 
-        # Compute loss
         if self.loss_function == "mse_loss":
             loss = F.mse_loss(selected_q_value, expected_q_value)
         elif self.loss_function == "smooth_l1_loss":
@@ -884,7 +853,6 @@ class AgentDQN:
         else:
             raise ValueError(f"Unsupported loss function: {self.loss_function}")
 
-        # Backpropagation
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
