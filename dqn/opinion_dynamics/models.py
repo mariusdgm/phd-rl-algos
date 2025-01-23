@@ -33,21 +33,20 @@ class OpinionNet(nn.Module):
             x (torch.Tensor): Input state features.
 
         Returns:
-            q_vals (torch.Tensor): Q-values for all \(\beta\) grid points.
             A_diag (torch.Tensor): Predicted positive definite diagonal elements of \( A \) for each \(\beta\).
             b (torch.Tensor): Predicted bias vectors \( b \) for each \(\beta\).
         """
         # Process input through fully connected layers
         features = self.fc(x)
 
-        # Predict \( q, A, b \)
-        A_b_q = self.predict_A_b_q(features)  # Shape: (batch_size, nr_betas * (2 * nr_agents + 1))
-        A_b_q = A_b_q.view(-1, self.nr_betas, 2 * self.nr_agents + 1)
+        # Predict \( free\_term, A, b \)
+        # free_term = A_b_net[:, :, 0]
+        A_b_net = self.predict_A_b_q(features)  # Shape: (batch_size, nr_betas * (2 * nr_agents + 1))
+        A_b_net = A_b_net.view(-1, self.nr_betas, 2 * self.nr_agents + 1)
 
-        # Extract Q-values, A, and b
-        q_vals = A_b_q[:, :, 0]  # Q-values for all \(\beta\)
-        A_diag = torch.exp(A_b_q[:, :, 1 : self.nr_agents + 1])  # Positive definite diagonal
-        b = A_b_q[:, :, self.nr_agents + 1 :]  # Bias vectors
+        # Extract A and b (omit the free term)
+        A_diag = torch.exp(A_b_net[:, :, 1 : self.nr_agents + 1])  # Positive definite diagonal
+        b = A_b_net[:, :, self.nr_agents + 1 :]  # Bias vectors
 
-        return q_vals, A_diag, b
+        return A_diag, b
 

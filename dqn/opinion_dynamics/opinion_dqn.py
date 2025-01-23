@@ -115,7 +115,6 @@ class AgentDQN:
             self.load_training_state(resume_training_path)
 
         self.betas = [0, 1]
-        self.num_betas = len(self.betas)
 
     def _make_model_checkpoint_file_path(self, experiment_output_folder, epoch_cnt=0):
         """Dynamically build the path where to save the model checkpoint."""
@@ -272,11 +271,13 @@ class AgentDQN:
             self.policy_model = OpinionNet(
                 self.in_features,
                 self.num_actions,
+                nr_betas = len(self.betas)
                 **estimator_settings["args"],
             )
             self.target_model = OpinionNet(
                 self.in_features,
                 self.num_actions,
+                nr_betas = len(self.betas)
                 **estimator_settings["args"],
             )
         else:
