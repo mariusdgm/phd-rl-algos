@@ -114,7 +114,6 @@ class AgentDQN:
         if resume_training_path:
             self.load_training_state(resume_training_path)
 
-        self.betas = [0, 1]
 
     def _make_model_checkpoint_file_path(self, experiment_output_folder, epoch_cnt=0):
         """Dynamically build the path where to save the model checkpoint."""
@@ -219,15 +218,8 @@ class AgentDQN:
             n_step=buffer_settings.get("n_step", 0),
         )
 
-        self.reward_perception = None
-        reward_perception_config = config.get("reward_perception", None)
-
-        if reward_perception_config:
-            reward_perception_mapping = reward_perception_config.get("parameters", None)
-            if reward_perception_mapping:
-                self.logger.info("Setup reward mapping.")
-                self.reward_perception = reward_perception_mapping
-
+        self.betas = [0, 1]
+        
         self.logger.info("Loaded configuration settings.")
 
     def _get_exp_decay_function(self, start: float, end: float, decay: float):
@@ -270,14 +262,12 @@ class AgentDQN:
         if estimator_settings["model"] == "OpinionNet":
             self.policy_model = OpinionNet(
                 self.in_features,
-                self.num_actions,
-                nr_betas = len(self.betas)
+                nr_betas = len(self.betas),
                 **estimator_settings["args"],
             )
             self.target_model = OpinionNet(
                 self.in_features,
-                self.num_actions,
-                nr_betas = len(self.betas)
+                nr_betas = len(self.betas),
                 **estimator_settings["args"],
             )
         else:
@@ -369,46 +359,35 @@ class AgentDQN:
         Returns:
             Tuple[torch.Tensor, float]: The optimal weights and the maximum Q-value.
         """
-        max_q = None
-
         if random_action or (epsilon is not None and np.random.rand() < epsilon):
             # Random action: Uniformly select weights within the valid range
             action = self.train_env.action_space.sample()
-            return action, max_q
+            return action, None
 
         with torch.no_grad():
-            
-            q_vals, A_diag, b = self.policy_model(state.unsqueeze(0))
+            A_diag, b = self.policy_model(state.unsqueeze(0))  # Forward pass
 
-            # Debug: Log shapes
-            print(f"q_vals shape: {q_vals.shape}")
-            print(f"A_diag shape: {A_diag.shape}")
-            print(f"b shape: {b.shape}")
-            
+            # Batch size and number of betas
+            batch_size, num_betas, num_agents = b.shape
+
+            # Compute \( w_j^* = - A_j^{-1} b_j \) for all \( j \)
             A_inv = 1.0 / A_diag  # Inverse of diagonal A
-            w_star = -A_inv * b  # Compute \( w^* \)
+            w_star = -A_inv * b  # Shape: (batch_size, num_betas, num_agents)
 
-            # Normalize \( w^* \)
-            w_star = torch.clamp(w_star, 0, 1)
-            w_star = w_star / w_star.sum(dim=2, keepdim=True)
+            # Normalize \( w_j^* \)
+            w_star = torch.clamp(w_star, 0, None)  # Ensure positivity
+            w_star = w_star / w_star.sum(dim=2, keepdim=True)  # Normalize to sum to 1
 
-            # Scale \( w^* \) to the valid range [0, env.max_u]
-            w_star_scaled = w_star * self.train_env.max_u
+            # Compute Q-values for all \(\beta_j\) using \( w_j^* \)
+            quadratic_term = torch.sum(w_star * (A_diag * w_star), dim=2) / 2  # Quadratic term
+            linear_term = torch.sum(w_star * b, dim=2)  # Linear term
+            q_values = -quadratic_term - linear_term  # Shape: (batch_size, num_betas)
 
-            # Compute \( b^T A^{-1} b \)
-            b_T = b.transpose(1, 2)  # Shape: (batch_size, nr_agents, nr_betas)
-            A_inv_b = A_inv * b  # Element-wise multiplication
-            A_inv_b = A_inv_b.transpose(1, 2)  # Ensure shape matches for bmm
-            b_A_inv_b = torch.bmm(b_T, A_inv_b).squeeze(2)  # Shape: (batch_size, nr_betas)
+            # Select the optimal beta \( \beta_{j^*} \)
+            max_q, beta_idx = q_values.max(dim=1)  # Shape: (batch_size,)
+            optimal_w = w_star[torch.arange(batch_size), beta_idx]  # Shape: (batch_size, num_agents)
 
-            # Compute the Q-values
-            q_full = q_vals - 0.5 * b_A_inv_b
-            max_q, beta_idx = q_full.max(dim=1)  # max_q is now a tensor of shape (batch_size,)
-
-            # Select the best \( w^* \) for each batch element
-            best_w = w_star_scaled[torch.arange(w_star_scaled.size(0)), beta_idx]  # Shape: (batch_size, nr_agents)
-
-        return best_w.cpu().numpy(), max_q.cpu().numpy()  # Return max_q as a numpy array
+            return optimal_w.cpu().numpy(), max_q.cpu().item()
 
     def get_max_q_val_for_state(self, state):
         with torch.inference_mode():
@@ -810,43 +789,50 @@ class AgentDQN:
         rewards = torch.FloatTensor(rewards).unsqueeze(1)
         dones = torch.FloatTensor(dones).unsqueeze(1)
 
-        if self.reward_perception:
-            rewards = rewards + self.reward_perception["shift"]
-
         self.policy_model.train()
 
         # Forward pass through the policy model
-        q_vals, A_diag, b = self.policy_model(states)
+        A_diag, b = self.policy_model(states)
 
         # Debug logs for tensor shapes
         if debug:
-            print(f"q_vals shape: {q_vals.shape}")
-            print(f"A_diag shape: {A_diag.shape}")
-            print(f"b shape: {b.shape}")
+            print(f"A_diag shape: {A_diag.shape}")  # Expected: (batch_size, nr_betas, nr_agents)
+            print(f"b shape: {b.shape}")  # Expected: (batch_size, nr_betas, nr_agents)
 
+        # Compute w*
         A_inv = 1.0 / A_diag
         w_star = -A_inv * b
 
+        # Normalize w*
         w_star = torch.clamp(w_star, 0, 1)
         w_star = w_star / w_star.sum(dim=2, keepdim=True)
 
-        b_T = b.transpose(2, 1)
+        # Compute \( b^T A^{-1} b \)
+        b_T = b.transpose(2, 1)  # Shape: (batch_size, nr_agents, nr_betas)
         A_inv_b = A_inv * b  # Element-wise multiplication
         b_A_inv_b = torch.sum(b_T * A_inv_b, dim=2)  # Shape: (batch_size, nr_betas)
 
-        q_full = q_vals - 0.5 * b_A_inv_b
+        # Compute Q-values for the optimal \( w^* \)
+        q_full = -0.5 * b_A_inv_b  # No free term \( c_j \) now
         selected_q_value = (q_full * actions).sum(dim=1, keepdim=True)
 
-        next_q_vals, next_A_diag, next_b = self.target_model(next_states)
+        # Forward pass through the target model for next states
+        next_A_diag, next_b = self.target_model(next_states)
         next_A_inv = 1.0 / next_A_diag
-        next_b_T = next_b.transpose(1, 2)
+
+        # Compute \( b^T A^{-1} b \) for the target model
+        next_b_T = next_b.transpose(1, 2)  # Shape: (batch_size, nr_agents, nr_betas)
         next_A_inv_b = next_A_inv * next_b
-        next_b_A_inv_b = torch.sum(next_b_T * next_A_inv_b, dim=1)
-        next_q_full = next_q_vals - 0.5 * next_b_A_inv_b
+        next_b_A_inv_b = torch.sum(next_b_T * next_A_inv_b, dim=1)  # Shape: (batch_size, nr_betas)
+        next_q_full = -0.5 * next_b_A_inv_b
+
+        # Compute the maximum Q-value for the next states
         max_next_q_values = next_q_full.max(dim=1, keepdim=True)[0]
 
+        # Compute the TD target
         expected_q_value = rewards + self.gamma * max_next_q_values * (1 - dones)
 
+        # Compute the loss
         if self.loss_function == "mse_loss":
             loss = F.mse_loss(selected_q_value, expected_q_value)
         elif self.loss_function == "smooth_l1_loss":
@@ -854,6 +840,7 @@ class AgentDQN:
         else:
             raise ValueError(f"Unsupported loss function: {self.loss_function}")
 
+        # Backpropagation
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
