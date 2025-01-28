@@ -798,32 +798,28 @@ class AgentDQN:
         if debug:
             print(f"A_diag shape: {A_diag.shape}")  # Expected: (batch_size, nr_betas, nr_agents)
             print(f"b shape: {b.shape}")  # Expected: (batch_size, nr_betas, nr_agents)
+            print(f"actions shape: {actions.shape}")  # Expected: (batch_size, nr_agents)
 
-        # Compute w*
-        A_inv = 1.0 / A_diag
-        w_star = -A_inv * b
+        # Normalize weights \( w \)
+        actions = torch.clamp(actions, 0, 1)
+        actions = actions / actions.sum(dim=1, keepdim=True)
 
-        # Normalize w*
-        w_star = torch.clamp(w_star, 0, 1)
-        w_star = w_star / w_star.sum(dim=2, keepdim=True)
-
-        # Compute \( b^T A^{-1} b \)
-        b_T = b.transpose(2, 1)  # Shape: (batch_size, nr_agents, nr_betas)
-        A_inv_b = A_inv * b  # Element-wise multiplication
-        b_A_inv_b = torch.sum(b_T * A_inv_b, dim=2)  # Shape: (batch_size, nr_betas)
-
-        # Compute Q-values for the optimal \( w^* \)
-        q_full = -0.5 * b_A_inv_b  # No free term \( c_j \) now
-        selected_q_value = (q_full * actions).sum(dim=1, keepdim=True)
+        # Compute quadratic and linear terms for selected Q-value
+        quadratic_term = 0.5 * torch.sum(A_diag * (actions.unsqueeze(1) ** 2), dim=(2))
+        linear_term = torch.sum(b * actions.unsqueeze(1), dim=2)
+        selected_q_value = -(quadratic_term + linear_term).unsqueeze(1)
 
         # Forward pass through the target model for next states
         next_A_diag, next_b = self.target_model(next_states)
-        next_A_inv = 1.0 / next_A_diag
+
+        if debug:
+            print(f"next_A_diag shape: {next_A_diag.shape}")  # Expected: (batch_size, nr_betas, nr_agents)
+            print(f"next_b shape: {next_b.shape}")  # Expected: (batch_size, nr_betas, nr_agents)
 
         # Compute \( b^T A^{-1} b \) for the target model
-        next_b_T = next_b.transpose(1, 2)  # Shape: (batch_size, nr_agents, nr_betas)
+        next_A_inv = 1.0 / next_A_diag
         next_A_inv_b = next_A_inv * next_b
-        next_b_A_inv_b = torch.sum(next_b_T * next_A_inv_b, dim=1)  # Shape: (batch_size, nr_betas)
+        next_b_A_inv_b = torch.sum(next_b * next_A_inv_b, dim=2)
         next_q_full = -0.5 * next_b_A_inv_b
 
         # Compute the maximum Q-value for the next states
@@ -831,6 +827,10 @@ class AgentDQN:
 
         # Compute the TD target
         expected_q_value = rewards + self.gamma * max_next_q_values * (1 - dones)
+
+        if debug:
+            print(f"selected_q_value shape: {selected_q_value.shape}")
+            print(f"expected_q_value shape: {expected_q_value.shape}")
 
         # Compute the loss
         if self.loss_function == "mse_loss":
