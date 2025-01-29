@@ -365,8 +365,10 @@ class AgentDQN:
             return action, None
 
         with torch.no_grad():
+            self.logger.info(f"State shape before forward pass: {state.shape}")
             A_diag, b = self.policy_model(state.unsqueeze(0))  # Forward pass
-
+            
+            self.logger.info(f"A_diag shape: {A_diag.shape}, b shape: {b.shape}")
             # Batch size and number of betas
             batch_size, num_betas, num_agents = b.shape
 
@@ -386,7 +388,8 @@ class AgentDQN:
             # Select the optimal beta \( \beta_{j^*} \)
             max_q, beta_idx = q_values.max(dim=1)  # Shape: (batch_size,)
             optimal_w = w_star[torch.arange(batch_size), beta_idx]  # Shape: (batch_size, num_agents)
-
+            
+            self.logger.info(f"Optimal weights shape: {optimal_w.shape}, Q-values shape: {q_values.shape}")
             return optimal_w.cpu().numpy(), max_q.cpu().item()
 
     def get_max_q_val_for_state(self, state):
@@ -531,10 +534,12 @@ class AgentDQN:
         while (not is_terminated) and (epoch_t < train_frames):
             # Corrected call to select_action
             action, max_q = self.select_action(self.train_s, epsilon=self.epsilon_by_frame(self.t))
+            self.logger.debug(f"State shape: {self.train_s.shape}")
+            self.logger.debug(f"Action shape: {action.shape}")
+            
             s_prime, reward, is_terminated, truncated, info = self.train_env.step(action)
-            s_prime = torch.tensor(s_prime, device=device).float()
-            if s_prime.ndim == 1:  # Expand to 2D if necessary
-                s_prime = s_prime.unsqueeze(0)
+            
+            self.logger.debug(f"State (s') shape after step: {s_prime.shape}")
 
             self.replay_buffer.append(self.train_s, action, reward, s_prime, is_terminated)
             self.max_qs.append(max_q)
@@ -579,10 +584,7 @@ class AgentDQN:
         self.max_qs = []
 
         self.train_s, _ = self.train_env.reset()
-        print(f"Initial state shape: {self.train_s.shape}")
-        self.train_s = torch.tensor(self.train_s, device=device).float()
-        if self.train_s.ndim == 1:
-            self.train_s = self.train_s.unsqueeze(0)
+        
 
     def display_training_epoch_info(self, stats):
         self.logger.info(
@@ -796,18 +798,21 @@ class AgentDQN:
 
         # Debug logs for tensor shapes
         if debug:
-            print(f"A_diag shape: {A_diag.shape}")  # Expected: (batch_size, nr_betas, nr_agents)
-            print(f"b shape: {b.shape}")  # Expected: (batch_size, nr_betas, nr_agents)
-            print(f"actions shape: {actions.shape}")  # Expected: (batch_size, nr_agents)
+            self.logger.info(f"States shape: {states.shape}, Next States shape: {next_states.shape}")
+            self.logger.info(f"Actions shape: {actions.shape}, Rewards shape: {rewards.shape}")
+            self.logger.info(f"Dones shape: {dones.shape}")
+            self.logger.info(f"A_diag shape: {A_diag.shape}, b shape: {b.shape}")
 
-        # Normalize weights \( w \)
-        actions = torch.clamp(actions, 0, 1)
-        actions = actions / actions.sum(dim=1, keepdim=True)
+        actions = actions.unsqueeze(1)  # Shape: [batch_size, 1, agents]
+        actions_one_hot = actions.repeat(1, len(self.betas), 1)  # Expand for all betas
 
-        # Compute quadratic and linear terms for selected Q-value
-        quadratic_term = 0.5 * torch.sum(A_diag * (actions.unsqueeze(1) ** 2), dim=(2))
-        linear_term = torch.sum(b * actions.unsqueeze(1), dim=2)
-        selected_q_value = -(quadratic_term + linear_term).unsqueeze(1)
+        # Compute Q-values for the selected action
+        quadratic_term = 0.5 * torch.sum(A_diag * (actions_one_hot ** 2), dim=2)
+        linear_term = torch.sum(b * actions_one_hot, dim=2)
+        q_full = -quadratic_term - linear_term  # Shape: [batch_size, nr_betas]
+
+        # Select Q-value corresponding to the chosen beta
+        selected_q_value = q_full.gather(1, actions.argmax(dim=1, keepdim=True))  # Shape: [batch_size, 1]
 
         # Forward pass through the target model for next states
         next_A_diag, next_b = self.target_model(next_states)
@@ -828,6 +833,8 @@ class AgentDQN:
         # Compute the TD target
         expected_q_value = rewards + self.gamma * max_next_q_values * (1 - dones)
 
+        selected_q_value = selected_q_value.squeeze(-1)  # Shape: [batch_size, 1]
+        expected_q_value = expected_q_value.unsqueeze(1)  # Shape: [batch_size, 1]
         if debug:
             print(f"selected_q_value shape: {selected_q_value.shape}")
             print(f"expected_q_value shape: {expected_q_value.shape}")

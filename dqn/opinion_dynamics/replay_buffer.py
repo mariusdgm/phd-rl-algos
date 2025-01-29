@@ -36,10 +36,9 @@ class ReplayBuffer:
         Normalize the state and next_state tensors before storing.
         """
         # Ensure consistent dimensionality for states and next_states
-        state = np.expand_dims(state, axis=0) if state.ndim == 1 else state
-        next_state = (
-            np.expand_dims(next_state, axis=0) if next_state.ndim == 1 else next_state
-        )
+        state = np.array(state).reshape(-1)  # Flatten to 1D
+        next_state = np.array(next_state).reshape(-1)  # Flatten to 1D
+        action = np.array(action).reshape(-1)  # Flatten to 1D
         self.buffer.append((state, action, reward, next_state, done))
 
     def sample(self, batch_size):
@@ -53,28 +52,11 @@ class ReplayBuffer:
         samples = random.sample(self.buffer, batch_size)
         states, actions, rewards, next_states, dones = zip(*samples)
 
-        # Ensure all states and next_states have the same dimensions
-        states = [s if s.ndim > 1 else np.expand_dims(s, axis=0) for s in states]
-        next_states = [
-            ns if ns.ndim > 1 else np.expand_dims(ns, axis=0) for ns in next_states
-        ]
-
-        # Stack states and next_states for consistent batching
-        states = torch.tensor(np.concatenate(states, axis=0), dtype=torch.float32)
-        next_states = torch.tensor(
-            np.concatenate(next_states, axis=0), dtype=torch.float32
-        )
+        states = torch.tensor(np.array(states), dtype=torch.float32)
+        next_states = torch.tensor(np.array(next_states), dtype=torch.float32)
         actions = torch.tensor(actions, dtype=torch.float32)
         rewards = torch.tensor(rewards, dtype=torch.float32)
         dones = torch.tensor(dones, dtype=torch.float32)
-
-        print(self.__len__())
-        print(f"States: {states.shape}")
-        # print(f"Actions: {actions.shape}")
-        # print(f"Rewards: {rewards.shape}")
-        # print(f"Next States: {next_states.shape}")
-        # print(f"Dones: {dones.shape}")
-        print()
 
         return states, actions, rewards, next_states, dones
 
