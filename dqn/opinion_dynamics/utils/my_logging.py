@@ -21,7 +21,7 @@ def setup_logger(name, log_file=None, level=logging.DEBUG):
     logger.setLevel(level)
 
     formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+            "%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s"
         )
     
     # Create a console handler

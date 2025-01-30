@@ -114,7 +114,6 @@ class AgentDQN:
         if resume_training_path:
             self.load_training_state(resume_training_path)
 
-
     def _make_model_checkpoint_file_path(self, experiment_output_folder, epoch_cnt=0):
         """Dynamically build the path where to save the model checkpoint."""
         return os.path.join(
@@ -219,7 +218,7 @@ class AgentDQN:
         )
 
         self.betas = [0, 1]
-        
+
         self.logger.info("Loaded configuration settings.")
 
     def _get_exp_decay_function(self, start: float, end: float, decay: float):
@@ -262,12 +261,12 @@ class AgentDQN:
         if estimator_settings["model"] == "OpinionNet":
             self.policy_model = OpinionNet(
                 self.in_features,
-                nr_betas = len(self.betas),
+                nr_betas=len(self.betas),
                 **estimator_settings["args"],
             )
             self.target_model = OpinionNet(
                 self.in_features,
-                nr_betas = len(self.betas),
+                nr_betas=len(self.betas),
                 **estimator_settings["args"],
             )
         else:
@@ -345,6 +344,45 @@ class AgentDQN:
 
         self.logger.debug(f"Training status saved at t = {self.t}")
 
+    def compute_w_star(self, A_diag, b):
+        """
+        Compute the optimal weight allocation w* given A_diag and b.
+
+        Args:
+            A_diag (torch.Tensor): Diagonal elements of A, shape (batch_size, nr_betas, nr_agents).
+            b (torch.Tensor): Bias term, shape (batch_size, nr_betas, nr_agents).
+
+        Returns:
+            torch.Tensor: Optimal weight allocation \( w^* \), shape (batch_size, nr_betas, nr_agents).
+        """
+        A_inv = 1.0 / A_diag  # Inverse of diagonal A
+        w_star = -A_inv * b  # Compute raw w*
+
+        # Ensure positivity
+        w_star = torch.clamp(w_star, 0, None)
+
+        # Normalize weights to sum to 1 across agents
+        w_star = w_star / w_star.sum(dim=2, keepdim=True)
+        return w_star
+    
+    def compute_q_values(self, w_star, A_diag, b, c):
+        """
+        Compute Q-values using the optimal weight allocation w*.
+
+        Args:
+            w_star (torch.Tensor): Optimal weight allocation, shape (batch_size, nr_betas, nr_agents).
+            A_diag (torch.Tensor): Diagonal elements of A, shape (batch_size, nr_betas, nr_agents).
+            b (torch.Tensor): Bias term, shape (batch_size, nr_betas, nr_agents).
+            c (torch.Tensor): Free term, shape (batch_size, nr_betas).
+
+        Returns:
+            torch.Tensor: Computed Q-values, shape (batch_size, nr_betas).
+        """
+        quadratic_term = torch.sum(w_star * (A_diag * w_star), dim=2) / 2
+        linear_term = torch.sum(w_star * b, dim=2)
+        q_values = c - quadratic_term - linear_term
+        return q_values
+    
     def select_action(
         self, state: torch.Tensor, epsilon: float = None, random_action: bool = False
     ):
@@ -360,58 +398,29 @@ class AgentDQN:
             Tuple[torch.Tensor, float]: The optimal weights and the maximum Q-value.
         """
         if random_action or (epsilon is not None and np.random.rand() < epsilon):
-            # Random action: Uniformly select weights within the valid range
             action = self.train_env.action_space.sample()
-            return action, None
+            q_value = None  # No Q-value for random actions
+            self.logger.info(f"Random action selected: {action}")
+            return np.array(action), q_value
 
         with torch.no_grad():
             self.logger.info(f"State shape before forward pass: {state.shape}")
-            A_diag, b = self.policy_model(state.unsqueeze(0))  # Forward pass
-            
+            A_diag, b, c = self.policy_model(state)  # Forward pass
+
             self.logger.info(f"A_diag shape: {A_diag.shape}, b shape: {b.shape}")
-            # Batch size and number of betas
-            batch_size, num_betas, num_agents = b.shape
 
-            # Compute \( w_j^* = - A_j^{-1} b_j \) for all \( j \)
-            A_inv = 1.0 / A_diag  # Inverse of diagonal A
-            w_star = -A_inv * b  # Shape: (batch_size, num_betas, num_agents)
+            # Compute \( w^* \)
+            w_star = self.compute_w_star(A_diag, b)
 
-            # Normalize \( w_j^* \)
-            w_star = torch.clamp(w_star, 0, None)  # Ensure positivity
-            w_star = w_star / w_star.sum(dim=2, keepdim=True)  # Normalize to sum to 1
-
-            # Compute Q-values for all \(\beta_j\) using \( w_j^* \)
-            quadratic_term = torch.sum(w_star * (A_diag * w_star), dim=2) / 2  # Quadratic term
-            linear_term = torch.sum(w_star * b, dim=2)  # Linear term
-            q_values = -quadratic_term - linear_term  # Shape: (batch_size, num_betas)
+            # Compute Q-values
+            q_values = self.compute_q_values(w_star, A_diag, b, c)
 
             # Select the optimal beta \( \beta_{j^*} \)
-            max_q, beta_idx = q_values.max(dim=1)  # Shape: (batch_size,)
-            optimal_w = w_star[torch.arange(batch_size), beta_idx]  # Shape: (batch_size, num_agents)
-            
+            max_q, beta_idx = q_values.max(dim=1)
+            optimal_w = w_star[torch.arange(w_star.shape[0]), beta_idx]
+
             self.logger.info(f"Optimal weights shape: {optimal_w.shape}, Q-values shape: {q_values.shape}")
             return optimal_w.cpu().numpy(), max_q.cpu().item()
-
-    def get_max_q_val_for_state(self, state):
-        with torch.inference_mode():
-            return self.policy_model(state).max(1)[0].item()
-
-    def get_q_val_for_action(self, state, action):
-        with torch.inference_mode():
-            return torch.index_select(
-                self.policy_model(state), 1, action.squeeze(0)
-            ).item()
-
-    def get_action_from_model(self, state):
-        with torch.inference_mode():
-            return self.policy_model(state).max(1)[1].view(1, 1)
-
-    # def get_max_q_and_action(self, state):
-    #     with torch.inference_mode():
-    #         maxq_and_action = self.policy_model(state).max(1)
-    #         q_val = maxq_and_action[0].item()
-    #         action = maxq_and_action[1].view(1, 1)
-    #         return action, q_val
 
     def train(self, train_epochs: int) -> True:
         """The main call for the training loop of the DQN Agent.
@@ -533,19 +542,29 @@ class AgentDQN:
         is_terminated = False
         while (not is_terminated) and (epoch_t < train_frames):
             # Corrected call to select_action
-            action, max_q = self.select_action(self.train_s, epsilon=self.epsilon_by_frame(self.t))
+            self.logger.info(f"State (s) shape before step: {self.train_s.shape}")
+            action, max_q = self.select_action(
+                torch.tensor(self.train_s, dtype=torch.float32), epsilon=self.epsilon_by_frame(self.t)
+            )
             self.logger.debug(f"State shape: {self.train_s.shape}")
-            self.logger.debug(f"Action shape: {action.shape}")
-            
-            s_prime, reward, is_terminated, truncated, info = self.train_env.step(action)
-            
+            self.logger.info(f"Action shape: {action.shape}")
+
+            s_prime, reward, is_terminated, truncated, info = self.train_env.step(
+                action
+            )
+
             self.logger.debug(f"State (s') shape after step: {s_prime.shape}")
 
-            self.replay_buffer.append(self.train_s, action, reward, s_prime, is_terminated)
+            self.replay_buffer.append(
+                self.train_s, action, reward, s_prime, is_terminated
+            )
             self.max_qs.append(max_q)
 
             # Train policy model
-            if self.t > self.replay_start_size and len(self.replay_buffer) >= self.batch_size:
+            if (
+                self.t > self.replay_start_size
+                and len(self.replay_buffer) >= self.batch_size
+            ):
                 if self.t % self.training_freq == 0:
                     sample = self.replay_buffer.sample(self.batch_size)
                     loss_val = self.model_learn(sample)
@@ -553,8 +572,11 @@ class AgentDQN:
                     self.policy_model_update_counter += 1
                     policy_trained_times += 1
 
-                if (self.policy_model_update_counter > 0 and
-                    self.policy_model_update_counter % self.target_model_update_freq == 0):
+                if (
+                    self.policy_model_update_counter > 0
+                    and self.policy_model_update_counter % self.target_model_update_freq
+                    == 0
+                ):
                     self.target_model.load_state_dict(self.policy_model.state_dict())
                     target_trained_times += 1
 
@@ -584,7 +606,6 @@ class AgentDQN:
         self.max_qs = []
 
         self.train_s, _ = self.train_env.reset()
-        
 
     def display_training_epoch_info(self, stats):
         self.logger.info(
@@ -753,8 +774,10 @@ class AgentDQN:
         is_terminated = False
         while not is_terminated:
             # Corrected call to select_action
-            action, max_q = self.select_action(s, epsilon=self.validation_epsilon)
-            s_prime, reward, is_terminated, truncated, info = self.validation_env.step(action)
+            action, max_q = self.select_action(torch.tensor(s, dtype=torch.float32), epsilon=self.validation_epsilon)
+            s_prime, reward, is_terminated, truncated, info = self.validation_env.step(
+                action
+            )
             s_prime = torch.tensor(s_prime, device=device).float()
 
             max_qs.append(max_q)
@@ -783,49 +806,42 @@ class AgentDQN:
         """Compute the loss with TD learning."""
         states, actions, rewards, next_states, dones = sample
 
-        # Ensure states are at least 2D before stacking
-        states = torch.stack([s.unsqueeze(0) if s.ndim == 1 else s for s in states], dim=0)
-        next_states = torch.stack([s.unsqueeze(0) if s.ndim == 1 else s for s in next_states], dim=0)
+        states = torch.tensor(np.array(states), dtype=torch.float32)
+        next_states = torch.tensor(np.array(next_states), dtype=torch.float32)
+        actions = torch.tensor(np.array(actions), dtype=torch.float32)
+        rewards = torch.tensor(np.array(rewards), dtype=torch.float32).unsqueeze(1)
+        dones = torch.tensor(np.array(dones), dtype=torch.float32).unsqueeze(1)
 
-        actions = torch.FloatTensor(actions)
-        rewards = torch.FloatTensor(rewards).unsqueeze(1)
-        dones = torch.FloatTensor(dones).unsqueeze(1)
+        self.logger.info(f"States shape: {states.shape}, Next States shape: {next_states.shape}")
+        self.logger.info(f"Actions shape: {actions.shape}, Rewards shape: {rewards.shape}")
+        self.logger.info(f"Dones shape: {dones.shape}")
 
         self.policy_model.train()
 
         # Forward pass through the policy model
-        A_diag, b = self.policy_model(states)
+        A_diag, b, c = self.policy_model(states)
 
-        # Debug logs for tensor shapes
-        if debug:
-            self.logger.info(f"States shape: {states.shape}, Next States shape: {next_states.shape}")
-            self.logger.info(f"Actions shape: {actions.shape}, Rewards shape: {rewards.shape}")
-            self.logger.info(f"Dones shape: {dones.shape}")
-            self.logger.info(f"A_diag shape: {A_diag.shape}, b shape: {b.shape}")
+        self.logger.info(f"A_diag shape: {A_diag.shape}, b shape: {b.shape}")
 
-        actions = actions.unsqueeze(1)  # Shape: [batch_size, 1, agents]
-        actions_one_hot = actions.repeat(1, len(self.betas), 1)  # Expand for all betas
+        # Compute \( w^* \)
+        w_star = self.compute_w_star(A_diag, b)
 
-        # Compute Q-values for the selected action
-        quadratic_term = 0.5 * torch.sum(A_diag * (actions_one_hot ** 2), dim=2)
-        linear_term = torch.sum(b * actions_one_hot, dim=2)
-        q_full = -quadratic_term - linear_term  # Shape: [batch_size, nr_betas]
+        # Compute Q-values
+        q_values = self.compute_q_values(w_star, A_diag, b, c)
 
-        # Select Q-value corresponding to the chosen beta
-        selected_q_value = q_full.gather(1, actions.argmax(dim=1, keepdim=True))  # Shape: [batch_size, 1]
+        # Select Q-value corresponding to the chosen action
+        selected_q_value = torch.sum(q_values * actions.unsqueeze(1), dim=2)
 
         # Forward pass through the target model for next states
-        next_A_diag, next_b = self.target_model(next_states)
-
-        if debug:
-            print(f"next_A_diag shape: {next_A_diag.shape}")  # Expected: (batch_size, nr_betas, nr_agents)
-            print(f"next_b shape: {next_b.shape}")  # Expected: (batch_size, nr_betas, nr_agents)
+        next_A_diag, next_b, next_c = self.target_model(next_states)
 
         # Compute \( b^T A^{-1} b \) for the target model
         next_A_inv = 1.0 / next_A_diag
         next_A_inv_b = next_A_inv * next_b
         next_b_A_inv_b = torch.sum(next_b * next_A_inv_b, dim=2)
-        next_q_full = -0.5 * next_b_A_inv_b
+
+        # Compute Q-values for next states
+        next_q_full = next_c + (-0.5 * next_b_A_inv_b)
 
         # Compute the maximum Q-value for the next states
         max_next_q_values = next_q_full.max(dim=1, keepdim=True)[0]
@@ -833,19 +849,11 @@ class AgentDQN:
         # Compute the TD target
         expected_q_value = rewards + self.gamma * max_next_q_values * (1 - dones)
 
-        selected_q_value = selected_q_value.squeeze(-1)  # Shape: [batch_size, 1]
-        expected_q_value = expected_q_value.unsqueeze(1)  # Shape: [batch_size, 1]
-        if debug:
-            print(f"selected_q_value shape: {selected_q_value.shape}")
-            print(f"expected_q_value shape: {expected_q_value.shape}")
+        self.logger.info(f"Selected Q-value shape: {selected_q_value.shape}")
+        self.logger.info(f"Expected Q-value shape: {expected_q_value.shape}")
 
         # Compute the loss
-        if self.loss_function == "mse_loss":
-            loss = F.mse_loss(selected_q_value, expected_q_value)
-        elif self.loss_function == "smooth_l1_loss":
-            loss = F.smooth_l1_loss(selected_q_value, expected_q_value)
-        else:
-            raise ValueError(f"Unsupported loss function: {self.loss_function}")
+        loss = F.mse_loss(selected_q_value, expected_q_value)
 
         # Backpropagation
         self.optimizer.zero_grad()

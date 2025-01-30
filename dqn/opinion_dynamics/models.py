@@ -21,7 +21,7 @@ class OpinionNet(nn.Module):
         )
 
         # Predict \( q(x, \beta; \theta), A, b \) for all \(\beta\) grid points
-        self.predict_A_b_q = nn.Linear(
+        self.predict_A_b_c = nn.Linear(
             self.lin_hidden_out_size, self.nr_betas * (2 * self.nr_agents + 1)
         )
 
@@ -35,18 +35,18 @@ class OpinionNet(nn.Module):
         Returns:
             A_diag (torch.Tensor): Predicted positive definite diagonal elements of \( A \) for each \(\beta\).
             b (torch.Tensor): Predicted bias vectors \( b \) for each \(\beta\).
+            c
         """
         # Process input through fully connected layers
         features = self.fc(x)
 
         # Predict \( free\_term, A, b \)
-        # free_term = A_b_net[:, :, 0]
-        A_b_net = self.predict_A_b_q(features)  # Shape: (batch_size, nr_betas * (2 * nr_agents + 1))
-        A_b_net = A_b_net.view(-1, self.nr_betas, 2 * self.nr_agents + 1)
+        A_b_c_net = self.predict_A_b_c(features)  # Shape: (batch_size, nr_betas * (2 * nr_agents + 1))
+        A_b_c_net = A_b_c_net.view(-1, self.nr_betas, 2 * self.nr_agents + 1)
 
-        # Extract A and b (omit the free term)
-        A_diag = torch.exp(A_b_net[:, :, 1 : self.nr_agents + 1])  # Positive definite diagonal
-        b = A_b_net[:, :, self.nr_agents + 1 :]  # Bias vectors
+        A_diag = torch.exp(A_b_c_net[:, :, 1 : self.nr_agents + 1])  # Positive definite diagonal
+        b = A_b_c_net[:, :, self.nr_agents + 1 :]  # Bias vectors
+        c = A_b_c_net[:, :, 0]
 
-        return A_diag, b
+        return A_diag, b, c
 
