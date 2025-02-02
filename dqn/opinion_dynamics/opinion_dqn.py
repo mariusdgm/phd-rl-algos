@@ -346,7 +346,7 @@ class AgentDQN:
 
     def compute_w_star(self, A_diag, b):
         """
-        Compute the optimal weight allocation w* given A_diag and b.
+        Compute the optimal weight allocation \( w^* \) given A_diag and b.
 
         Args:
             A_diag (torch.Tensor): Diagonal elements of A, shape (batch_size, nr_betas, nr_agents).
@@ -359,12 +359,15 @@ class AgentDQN:
         w_star = -A_inv * b  # Compute raw w*
 
         # Ensure positivity
-        w_star = torch.clamp(w_star, 0, None)
+        w_star = torch.clamp(w_star, min=0)
 
         # Normalize weights to sum to 1 across agents
-        w_star = w_star / w_star.sum(dim=2, keepdim=True)
+        w_star = w_star / (
+            w_star.sum(dim=2, keepdim=True) + 1e-8
+        )  # Avoid division by zero
+
         return w_star
-    
+
     def compute_q_values(self, w_star, A_diag, b, c):
         """
         Compute Q-values using the optimal weight allocation w*.
@@ -382,7 +385,30 @@ class AgentDQN:
         linear_term = torch.sum(w_star * b, dim=2)
         q_values = c - quadratic_term - linear_term
         return q_values
-    
+
+    def compute_action_from_w(self, w: torch.Tensor, beta: torch.Tensor):
+        """
+        Compute the action \( u \) from allocation weights \( w \) and beta values \( \beta \).
+
+        Args:
+            w (torch.Tensor): Allocation weights, shape (batch_size, num_agents).
+            beta (torch.Tensor): Beta values for each instance, shape (batch_size,).
+
+        Returns:
+            torch.Tensor: Actions \( u \), scaled by max_u, shape (batch_size, num_agents).
+        """
+        epsilon = 1e-8  # For numerical stability
+
+        # Normalize weights
+        w_normalized = w / (w.sum(dim=1, keepdim=True) + epsilon)
+
+        # Scale with beta and max_u
+        u = (
+            w_normalized * beta.unsqueeze(1) * self.train_env.max_u
+        )  # Apply max_u scaling
+
+        return u
+
     def select_action(
         self, state: torch.Tensor, epsilon: float = None, random_action: bool = False
     ):
@@ -395,32 +421,36 @@ class AgentDQN:
             random_action (bool, optional): Whether to select a random action. Defaults to False.
 
         Returns:
-            Tuple[torch.Tensor, float]: The optimal weights and the maximum Q-value.
+            Tuple[np.ndarray, float]: The action (control input \( u \)) and the corresponding Q-value (or None if exploration).
         """
-        if random_action or (epsilon is not None and np.random.rand() < epsilon):
-            action = self.train_env.action_space.sample()
-            q_value = None  # No Q-value for random actions
-            self.logger.info(f"Random action selected: {action}")
-            return np.array(action), q_value
-
         with torch.no_grad():
-            self.logger.info(f"State shape before forward pass: {state.shape}")
+            self.logger.debug(f"State shape before forward pass: {state.shape}")
             A_diag, b, c = self.policy_model(state)  # Forward pass
+            self.logger.debug(f"A_diag shape: {A_diag.shape}, b shape: {b.shape}")
 
-            self.logger.info(f"A_diag shape: {A_diag.shape}, b shape: {b.shape}")
-
-            # Compute \( w^* \)
             w_star = self.compute_w_star(A_diag, b)
-
-            # Compute Q-values
             q_values = self.compute_q_values(w_star, A_diag, b, c)
 
-            # Select the optimal beta \( \beta_{j^*} \)
             max_q, beta_idx = q_values.max(dim=1)
             optimal_w = w_star[torch.arange(w_star.shape[0]), beta_idx]
+            betas = torch.tensor(
+                [self.betas[idx] for idx in beta_idx], dtype=torch.float32
+            )
 
-            self.logger.info(f"Optimal weights shape: {optimal_w.shape}, Q-values shape: {q_values.shape}")
-            return optimal_w.cpu().numpy(), max_q.cpu().item()
+            if random_action or (epsilon is not None and np.random.rand() < epsilon):
+                noise_amplitude = epsilon if epsilon is not None else 0.1
+                noise = torch.randn_like(optimal_w) * noise_amplitude
+
+                noisy_w = optimal_w + noise
+                noisy_w = torch.clamp(noisy_w, 1e-3, None)
+                noisy_w = noisy_w / (noisy_w.sum(dim=-1, keepdim=True) + 1e-8)
+                u = self.compute_action_from_w(noisy_w, betas)
+
+                return u.cpu().numpy(), None
+
+            # Exploitation: compute the optimal action
+            u = self.compute_action_from_w(optimal_w, betas)
+            return u.cpu().numpy(), max_q.cpu().item()
 
     def train(self, train_epochs: int) -> True:
         """The main call for the training loop of the DQN Agent.
@@ -541,14 +571,15 @@ class AgentDQN:
 
         is_terminated = False
         while (not is_terminated) and (epoch_t < train_frames):
-            # Corrected call to select_action
-            self.logger.info(f"State (s) shape before step: {self.train_s.shape}")
+            self.logger.debug(f"State (s) shape before step: {self.train_s.shape}")
             action, max_q = self.select_action(
-                torch.tensor(self.train_s, dtype=torch.float32), epsilon=self.epsilon_by_frame(self.t)
+                torch.tensor(self.train_s, dtype=torch.float32),
+                epsilon=self.epsilon_by_frame(self.t),
             )
             self.logger.debug(f"State shape: {self.train_s.shape}")
-            self.logger.info(f"Action shape: {action.shape}")
+            self.logger.debug(f"Action shape: {action.shape}")
 
+            action = np.squeeze(action)
             s_prime, reward, is_terminated, truncated, info = self.train_env.step(
                 action
             )
@@ -668,20 +699,18 @@ class AgentDQN:
         return stats
 
     def get_vector_stats(self, vector):
-        """Do a single validation epoch.
-
-        Returns:
-            Dict: dictionary containing the statistics of the training epoch.
-        """
+        """Compute statistics for a list of values, handling None gracefully."""
         stats = {}
 
-        if len(vector) > 0:
-            stats["min"] = np.nanmin(vector)
-            stats["max"] = np.nanmax(vector)
-            stats["mean"] = np.nanmean(vector)
-            stats["median"] = np.nanmedian(vector)
-            stats["std"] = np.nanstd(vector)
+        # Filter out None values
+        clean_vector = [v for v in vector if v is not None]
 
+        if len(clean_vector) > 0:
+            stats["min"] = np.nanmin(clean_vector)
+            stats["max"] = np.nanmax(clean_vector)
+            stats["mean"] = np.nanmean(clean_vector)
+            stats["median"] = np.nanmedian(clean_vector)
+            stats["std"] = np.nanstd(clean_vector)
         else:
             stats["min"] = None
             stats["max"] = None
@@ -773,8 +802,10 @@ class AgentDQN:
 
         is_terminated = False
         while not is_terminated:
-            # Corrected call to select_action
-            action, max_q = self.select_action(torch.tensor(s, dtype=torch.float32), epsilon=self.validation_epsilon)
+            action, max_q = self.select_action(
+                torch.tensor(s, dtype=torch.float32), epsilon=self.validation_epsilon
+            )
+            action = np.squeeze(action)
             s_prime, reward, is_terminated, truncated, info = self.validation_env.step(
                 action
             )
@@ -812,16 +843,20 @@ class AgentDQN:
         rewards = torch.tensor(np.array(rewards), dtype=torch.float32).unsqueeze(1)
         dones = torch.tensor(np.array(dones), dtype=torch.float32).unsqueeze(1)
 
-        self.logger.info(f"States shape: {states.shape}, Next States shape: {next_states.shape}")
-        self.logger.info(f"Actions shape: {actions.shape}, Rewards shape: {rewards.shape}")
-        self.logger.info(f"Dones shape: {dones.shape}")
+        self.logger.debug(
+            f"States shape: {states.shape}, Next States shape: {next_states.shape}"
+        )
+        self.logger.debug(
+            f"Actions shape: {actions.shape}, Rewards shape: {rewards.shape}"
+        )
+        self.logger.debug(f"Dones shape: {dones.shape}")
 
         self.policy_model.train()
 
         # Forward pass through the policy model
         A_diag, b, c = self.policy_model(states)
 
-        self.logger.info(f"A_diag shape: {A_diag.shape}, b shape: {b.shape}")
+        self.logger.debug(f"A_diag shape: {A_diag.shape}, b shape: {b.shape}")
 
         # Compute \( w^* \)
         w_star = self.compute_w_star(A_diag, b)
@@ -830,7 +865,11 @@ class AgentDQN:
         q_values = self.compute_q_values(w_star, A_diag, b, c)
 
         # Select Q-value corresponding to the chosen action
-        selected_q_value = torch.sum(q_values * actions.unsqueeze(1), dim=2)
+        self.logger.debug(f"Q-values shape: {q_values.shape}")
+        self.logger.debug(f"Actions shape: {actions.shape}")
+
+        beta_indices = q_values.argmax(dim=1, keepdim=True)
+        selected_q_value = q_values.gather(1, beta_indices)
 
         # Forward pass through the target model for next states
         next_A_diag, next_b, next_c = self.target_model(next_states)
@@ -848,9 +887,6 @@ class AgentDQN:
 
         # Compute the TD target
         expected_q_value = rewards + self.gamma * max_next_q_values * (1 - dones)
-
-        self.logger.info(f"Selected Q-value shape: {selected_q_value.shape}")
-        self.logger.info(f"Expected Q-value shape: {expected_q_value.shape}")
 
         # Compute the loss
         loss = F.mse_loss(selected_q_value, expected_q_value)
