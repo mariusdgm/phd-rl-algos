@@ -801,7 +801,7 @@ class AgentDQN:
         s = torch.tensor(s, device=device).float()
 
         is_terminated = False
-        while not is_terminated:
+        while (not is_terminated) and (ep_frames < self.validation_step_cnt):
             action, max_q = self.select_action(
                 torch.tensor(s, dtype=torch.float32), epsilon=self.validation_epsilon
             )
