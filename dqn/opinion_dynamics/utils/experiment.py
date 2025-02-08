@@ -3,7 +3,7 @@ import os
 import random
 import torch
 import numpy as np
-import datetime 
+import datetime
 
 from pathlib import Path
 from typing import Dict
@@ -68,6 +68,7 @@ def create_path_to_experiment_folder(
 
     return exp_folder_path
 
+
 def create_adjacency_matrix_from_links(num_nodes, links):
     adjacency_matrix = np.zeros((num_nodes, num_nodes), dtype=int)
     for link in links:
@@ -79,18 +80,15 @@ def create_adjacency_matrix_from_links(num_nodes, links):
 
 
 ### Env building code
-def build_environment(): 
+def build_environment():
     links = [
         (1, 3),
         (3, 2),
-        
         (2, 3),
         (2, 0),
         (0, 2),
-        
         (1, 2),
         (0, 1),
-        
         # (3, 4),
         # (4, 3)
     ]
@@ -106,11 +104,12 @@ def build_environment():
     env = NetworkGraph(
         connectivity_matrix=connectivity_matrix,
         initial_opinions=initial_opinions,
-        max_u=0.2,
+        max_u=0.5,
         budget=100.0,
         desired_opinion=1.0,
-        tau=0.5,
-        max_steps=1_000_000,
+        tau=3,
+        max_steps=100,
+        opinion_end_tolerance=0.01,
     )
 
     env.reset()
