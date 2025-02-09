@@ -1,6 +1,6 @@
 experiment: "opinion_agent_dqn"
 
-epochs_to_train: 5
+epochs_to_train: 10
 environment: [opinion_net]
 
 agent_params:
