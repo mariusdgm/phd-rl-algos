@@ -5,7 +5,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 
-def setup_logger(name, log_file=None, level=logging.DEBUG):
+def setup_logger(name, log_file=None, level=logging.INFO):
     """
     Create and return a customized logger.
 
