@@ -8,7 +8,9 @@ from itertools import product, combinations
 from copy import deepcopy
 
 
-def run_policy_campaigns(env, policy, nx, step_duration, sampling_time, tolerance=0.01, max_campaigns=100):
+def run_policy_campaigns(
+    env, policy, nx, step_duration, sampling_time, tolerance=0.01, max_campaigns=100
+):
     """
     Run the simulation using a given policy with a maximum number of campaigns.
 
@@ -81,7 +83,10 @@ def run_policy_campaigns(env, policy, nx, step_duration, sampling_time, toleranc
     print(f"Simulation stopped after {campaign_count} campaigns.")
     return opinions_over_time, time_points, nodes_controlled_simulation
 
-def simulate_campaign_with_sampling(env, control_input, X, step_duration, sampling_time):
+
+def simulate_campaign_with_sampling(
+    env, control_input, X, step_duration, sampling_time
+):
     N = env.num_agents
     num_samples = int(np.ceil(step_duration / sampling_time)) + 1
     opinions_over_time = np.zeros((num_samples, N))
@@ -112,6 +117,7 @@ def simulate_campaign_with_sampling(env, control_input, X, step_duration, sampli
 
     return opinions_over_time, time_points
 
+
 def generate_full_control_policy(env, nx):
     """
     Generate a control policy that applies maximum control to all agents in all states.
@@ -137,7 +143,8 @@ def generate_full_control_policy(env, nx):
         policy[idx] = full_control_action.copy()
 
     return policy
-    
+
+
 def optimal_control_action(env, total_budget):
     """
     Implement the optimal control strategy using precomputed centralities and influence powers.
@@ -288,10 +295,12 @@ def forward_propagation_multiplicative(env, V, B, order, order0, M, TB):
     final_cost = np.abs(np.mean(X[:, -1]) - xd)
     return BETA, U, X, final_cost
 
+
 def create_state_grid(N, nx):
     grid_range = np.linspace(0, 1, nx)
     grids = [grid_range for _ in range(N)]
     return grids
+
 
 def interpolate_to_grid(value, grid):
     """Interpolate a value onto a grid to find fractional index."""
@@ -304,6 +313,7 @@ def interpolate_to_grid(value, grid):
         lower_val, upper_val = grid[lower_idx], grid[lower_idx + 1]
         return lower_idx + (value - lower_val) / (upper_val - lower_val)
 
+
 def dynamic_programming_high_dim(env, M, TB, nx=10, gamma=1):
     env = deepcopy(env)
     N = env.num_agents
@@ -311,13 +321,13 @@ def dynamic_programming_high_dim(env, M, TB, nx=10, gamma=1):
     xd = env.desired_opinion
     grids = create_state_grid(N, nx)
     grid_shape = tuple(len(grid) for grid in grids)
-    
+
     V = np.full((M + 1,) + grid_shape + (TB + 1,), np.inf)
     B_dict = {}
 
-    grid_points = np.array(np.meshgrid(*grids, indexing='ij')).T.reshape(-1, N)
+    grid_points = np.array(np.meshgrid(*grids, indexing="ij")).T.reshape(-1, N)
     terminal_cost = np.abs(grid_points - xd).mean(axis=1).reshape(grid_shape)
-    
+
     V[M, ..., :] = np.repeat(terminal_cost[..., np.newaxis], TB + 1, axis=-1)
 
     for k in range(M - 1, -1, -1):
@@ -336,13 +346,18 @@ def dynamic_programming_high_dim(env, M, TB, nx=10, gamma=1):
                         control_input = np.zeros(N)
                         for node in target_nodes:
                             control_input[node] = ubar
-                        
+
                         # Directly compute new states and map to nearest grid indices
-                        new_states = env.compute_dynamics(current_states, control_input, step_duration=30)
+                        new_states = env.compute_dynamics(
+                            current_states, control_input, step_duration=30
+                        )
                         new_states_clipped = np.clip(new_states, 0, 1)
 
                         # Get nearest grid indices rather than interpolating
-                        next_idx = tuple(np.abs(grids[i] - new_states_clipped[i]).argmin() for i in range(N))
+                        next_idx = tuple(
+                            np.abs(grids[i] - new_states_clipped[i]).argmin()
+                            for i in range(N)
+                        )
                         future_cost = V[k + 1][next_idx + (rem - beta_used,)]
 
                         immediate_cost = np.abs(new_states_clipped - xd).mean()
@@ -352,10 +367,13 @@ def dynamic_programming_high_dim(env, M, TB, nx=10, gamma=1):
                             val = total_cost
                             best_control = control_input
                             best_nodes = target_nodes
-                            
+
                 if best_control is not None:
                     V[(k,) + idx + (rem,)] = val
-                    B_dict[(k,) + idx + (rem,)] = {'control': best_control, 'nodes': best_nodes}
+                    B_dict[(k,) + idx + (rem,)] = {
+                        "control": best_control,
+                        "nodes": best_nodes,
+                    }
 
     return V, B_dict
 
@@ -379,11 +397,13 @@ def forward_propagation_high_dim(env, V, B_dict, M, TB, nx=10):
         idx = tuple(np.abs(grids[i] - current_states[i]).argmin() for i in range(N))
 
         key = (k,) + idx + (rem,)
-        control_data = B_dict.get(key, {'control': np.zeros(N), 'nodes': []})
-        control_input, target_nodes = control_data['control'], control_data['nodes']
+        control_data = B_dict.get(key, {"control": np.zeros(N), "nodes": []})
+        control_input, target_nodes = control_data["control"], control_data["nodes"]
         U[:, k] = control_input
 
-        new_states = env.compute_dynamics(current_states, control_input, step_duration=100)
+        new_states = env.compute_dynamics(
+            current_states, control_input, step_duration=100
+        )
         X[:, k + 1] = np.clip(new_states, 0, 1)
 
         beta_k = len(target_nodes)
@@ -407,15 +427,18 @@ def forward_propagation_high_dim(env, V, B_dict, M, TB, nx=10):
         print(f"  Total cost so far: {total_cost}")
 
         if rem < 0 or beta_k > TB:
-            print(f"Warning: Budget inconsistency detected at stage {k}. rem={rem}, beta_k={beta_k}")
+            print(
+                f"Warning: Budget inconsistency detected at stage {k}. rem={rem}, beta_k={beta_k}"
+            )
             break
 
     final_cost = np.mean(np.abs((X[:, -1] - xd)))
     print(f"Final X: {X[:, -1]}")
     print(f"Final Cost from forward propagation: {final_cost}")
     print(f"Total Expected Cost (from V and propagation): {total_cost}")
-    
+
     return X, U, BETA_hd, final_cost
+
 
 def run_dynamic_programming_campaigns(
     env,
@@ -734,6 +757,7 @@ def compute_expected_value_for_budget_distribution(
         X[k + 1] = xplus
     final_opinion_error = abs(X[-1] - d)
     return final_opinion_error, total_cost, costs, X
+
 
 def dynamic_programming_with_grid(env, M, TB, nx=10, epsilon=1e-8):
     """
