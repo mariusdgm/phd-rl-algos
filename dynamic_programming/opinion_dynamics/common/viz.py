@@ -202,3 +202,55 @@ def plot_budget_distribution(budget_distribution, affected_nodes):
         )
 
     plt.show()
+
+
+def visualize_policy_from_env(policy, env, nx, node_index):
+    """
+    Visualize the policy with respect to the value of a specific node and mean opinion of the network.
+
+    Args:
+        policy (dict): Mapping from state indices to actions.
+        env: The environment with network properties.
+        nx (int): Number of grid points per dimension.
+        node_index (int): The index of the node to visualize.
+    """
+    # Define the state grid: opinions range from 0 to 1
+    N = env.num_agents  # Number of agents
+    grids = [np.linspace(0, 1, nx) for _ in range(N)]  # Uniform grid in [0, 1]
+
+    node_opinions = []  # X-axis: Opinion of the specific node
+    mean_opinions = []  # Y-axis: Mean opinion of the network
+    actions = []  # Full action (0.2) or no action (0)
+
+    for idx, action in policy.items():
+        # Map state indices to grid values
+        state = [grids[i][idx[i]] for i in range(N)]
+        node_opinion = state[node_index]  # Opinion of the specific node
+        mean_opinion = np.mean(state)  # Mean opinion of the network
+
+        node_opinions.append(node_opinion)
+        mean_opinions.append(mean_opinion)
+        actions.append(np.any(action))  # 1 if full action (0.2), 0 if no action
+
+    # Map actions to two colors
+    colors = ["red" if a else "blue" for a in actions]
+
+    # Scatter plot
+    plt.figure(figsize=(10, 6))
+    for color, label in zip(["red", "blue"], ["Full Action (0.2)", "No Action (0)"]):
+        subset_idx = [i for i, c in enumerate(colors) if c == color]
+        plt.scatter(
+            np.array(node_opinions)[subset_idx],
+            np.array(mean_opinions)[subset_idx],
+            c=color,
+            label=label,
+            s=50,
+            alpha=0.8,
+        )
+
+    plt.xlabel(f"Opinion of Node {node_index}")
+    plt.ylabel("Mean Opinion of Network")
+    plt.title("Policy Visualization")
+    plt.legend()
+    plt.grid(True)
+    plt.show()

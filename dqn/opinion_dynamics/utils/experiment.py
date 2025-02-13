@@ -104,7 +104,7 @@ def build_environment():
     env = NetworkGraph(
         connectivity_matrix=connectivity_matrix,
         initial_opinions=initial_opinions,
-        max_u=0.2,
+        max_u=0.4,
         budget=100.0,
         desired_opinion=1.0,
         tau=0.1,
