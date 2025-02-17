@@ -107,7 +107,7 @@ def build_environment():
         max_u=0.5,
         budget=100.0,
         desired_opinion=0.9,
-        tau=3,
+        tau=0.1,
         max_steps=100,
         opinion_end_tolerance=0.01,
     )
