@@ -97,7 +97,7 @@ def build_environment():
     connectivity_matrix = create_adjacency_matrix_from_links(num_nodes, links)
     # connectivity_matrix = normalize_adjacency_matrix(connectivity_matrix)
 
-    initial_opinions = np.linspace(0.7, 0, num_nodes)
+    initial_opinions = np.linspace(0.5, 0, num_nodes)
     # initial_opinions = np.linspace(0, 1, num_nodes)
     # initial_opinions = (np.mod(np.arange(0, 0.1 * num_nodes, 0.1), 0.9)) + 0.1
 
@@ -110,6 +110,7 @@ def build_environment():
         tau=0.1,
         max_steps=100,
         opinion_end_tolerance=0.01,
+        control_beta=0.2,
     )
 
     env.reset()
