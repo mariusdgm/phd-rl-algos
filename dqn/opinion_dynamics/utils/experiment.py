@@ -109,8 +109,8 @@ def build_environment():
         desired_opinion=0.9,
         tau=0.1,
         max_steps=100,
-        opinion_end_tolerance=0.01,
-        control_beta=0.2,
+        opinion_end_tolerance=0.25,
+        control_beta=0,
     )
 
     env.reset()
