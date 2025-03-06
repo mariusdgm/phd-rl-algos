@@ -97,20 +97,20 @@ def build_environment():
     connectivity_matrix = create_adjacency_matrix_from_links(num_nodes, links)
     # connectivity_matrix = normalize_adjacency_matrix(connectivity_matrix)
 
-    initial_opinions = np.linspace(0.5, 0, num_nodes)
+    initial_opinions = np.linspace(0.3, 0, num_nodes)
     # initial_opinions = np.linspace(0, 1, num_nodes)
     # initial_opinions = (np.mod(np.arange(0, 0.1 * num_nodes, 0.1), 0.9)) + 0.1
 
     env = NetworkGraph(
         connectivity_matrix=connectivity_matrix,
         initial_opinions=initial_opinions,
-        max_u=0.5,
+        max_u=0.4,
         budget=100.0,
-        desired_opinion=0.9,
+        desired_opinion=0.8,
         tau=0.1,
         max_steps=100,
-        opinion_end_tolerance=0.25,
-        control_beta=0,
+        opinion_end_tolerance=0.02,
+        control_beta=2,
     )
 
     env.reset()

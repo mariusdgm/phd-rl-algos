@@ -5,7 +5,7 @@ from scipy.interpolate import RegularGridInterpolator
 
 def create_state_grid(N, nx):
     grid_range = np.linspace(0, 1, nx)
-    grids = [grid_range for _ in range(N)]
+    grids = [grid_range.copy() for _ in range(N)]
     return grids
 
 
@@ -13,6 +13,8 @@ def initialize_value_function(N, nx):
     grid_shape = tuple([nx] * N)
     return np.zeros(grid_shape)
 
+def is_terminal(next_state, env):
+    return np.abs(np.mean(next_state) - env.desired_opinion) <= env.opinion_end_tolerance
 
 def reward_function(x, u, d, beta):
     return -np.abs(d - x).sum() - beta * np.sum(u)
@@ -29,7 +31,6 @@ def value_iteration(
     env, nx=10, gamma=1.0, beta=0.0, step_duration=3.0, max_iterations=1000, tol=1e-6
 ):
     N = env.num_agents
-    ubar = env.max_u
     d = env.desired_opinion
 
     grids = create_state_grid(N, nx)
@@ -37,7 +38,8 @@ def value_iteration(
 
     V = initialize_value_function(N, nx)
 
-    control_actions = list(product([0, ubar], repeat=N))
+    action_levels = [0, env.max_u/2, env.max_u]  # 3 levels
+    control_actions = list(product(action_levels, repeat=N))
 
     for iteration in range(max_iterations):
         V_new = np.zeros_like(V)
@@ -58,7 +60,10 @@ def value_iteration(
 
                 # next_idx = tuple(np.abs(grids[i] - next_state[i]).argmin() for i in range(N))
                 # future_value = V[next_idx]
-                future_value = interpolator(next_state)
+                if is_terminal(next_state, env):
+                    future_value = 0
+                else:
+                    future_value = interpolator(next_state.reshape(1, -1))[0]
 
                 immediate_reward = reward_function(
                     current_state, control_input, d, beta
@@ -82,13 +87,13 @@ def value_iteration(
 
 def extract_policy(env, V, nx=10, gamma=1.0, beta=0.0, step_duration=3.0):
     N = env.num_agents
-    ubar = env.max_u
     d = env.desired_opinion
 
     grids = create_state_grid(N, nx)
     grid_shape = tuple(len(grid) for grid in grids)
 
-    control_actions = list(product([0, ubar], repeat=N))
+    action_levels = [0, env.max_u/2, env.max_u]  # 3 levels
+    control_actions = list(product(action_levels, repeat=N))
     policy = {}
 
     interpolator = build_interpolator(V, grids)
@@ -107,7 +112,10 @@ def extract_policy(env, V, nx=10, gamma=1.0, beta=0.0, step_duration=3.0):
 
             # next_idx = tuple(np.abs(grids[i] - next_state[i]).argmin() for i in range(N))
             # future_value = V[next_idx]
-            future_value = interpolator(next_state)
+            if is_terminal(next_state, env):
+                future_value = 0
+            else: 
+                future_value = interpolator(next_state.reshape(1, -1))[0]
 
             immediate_reward = reward_function(current_state, control_input, d, beta)
             total_value = immediate_reward + gamma * future_value
