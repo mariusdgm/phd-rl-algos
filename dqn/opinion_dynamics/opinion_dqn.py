@@ -204,6 +204,7 @@ class AgentDQN:
             decay=eps_settings["decay"],
             eps_decay_start=self.replay_start_size,
         )
+        self.gamma = agent_params.get("gamma", 0.90)
 
         self._read_and_init_envs()  # sets up in_features etc...
 
@@ -508,6 +509,7 @@ class AgentDQN:
         target_trained_times = 0
 
         epoch_episode_rewards = []
+        epoch_episode_discounted_rewards = []
         epoch_episode_nr_frames = []
         epoch_losses = []
         epoch_max_qs = []
@@ -518,6 +520,7 @@ class AgentDQN:
                 is_terminated,
                 epoch_t,
                 current_episode_reward,
+                current_episode_discounted_reward,
                 ep_frames,
                 ep_policy_trained_times,
                 ep_target_trained_times,
@@ -532,6 +535,7 @@ class AgentDQN:
                 # we only want to append these stats if the episode was completed,
                 # otherwise it means it was stopped due to the nr of frames criterion
                 epoch_episode_rewards.append(current_episode_reward)
+                epoch_episode_discounted_rewards.append(current_episode_discounted_reward)
                 epoch_episode_nr_frames.append(ep_frames)
                 epoch_losses.extend(ep_losses)
                 epoch_max_qs.extend(ep_max_qs)
@@ -544,6 +548,7 @@ class AgentDQN:
 
         epoch_stats = self.compute_training_epoch_stats(
             epoch_episode_rewards,
+            epoch_episode_discounted_rewards,
             epoch_episode_nr_frames,
             policy_trained_times,
             target_trained_times,
@@ -612,6 +617,8 @@ class AgentDQN:
                     target_trained_times += 1
 
             self.current_episode_reward += reward
+            self.current_episode_discounted_reward += self.discount_factor * reward
+            self.discount_factor *= self.gamma
             self.t += 1
             epoch_t += 1
             self.ep_frames += 1
@@ -622,6 +629,7 @@ class AgentDQN:
             is_terminated,
             epoch_t,
             self.current_episode_reward,
+            self.current_episode_discounted_reward,
             self.ep_frames,
             policy_trained_times,
             target_trained_times,
@@ -632,6 +640,9 @@ class AgentDQN:
     def reset_training_episode_tracker(self):
         """Resets the environment and the variables that keep track of the training episode."""
         self.current_episode_reward = 0.0
+        self.current_episode_discounted_reward = 0.0
+        self.discount_factor = 1.0
+        
         self.ep_frames = 0
         self.losses = []
         self.max_qs = []
@@ -662,6 +673,7 @@ class AgentDQN:
     def compute_training_epoch_stats(
         self,
         episode_rewards,
+        episode_discounted_rewards,
         episode_nr_frames,
         policy_trained_times,
         target_trained_times,
@@ -673,6 +685,7 @@ class AgentDQN:
 
         Args:
             episode_rewards (List): list contraining the final reward of each episode in the current epoch.
+            episode_discounted_rewards (List): list contraining the final discounted reward of each episode in the current epoch.
             episode_nr_frames (List): list contraining the final number of frames of each episode in the current epoch.
             policy_trained_times (int): Number representing how many times the policy network was updated.
             target_trained_times (int): Number representing how many times the target network was updated.
@@ -688,6 +701,7 @@ class AgentDQN:
         stats["frame_stamp"] = self.t
 
         stats["episode_rewards"] = self.get_vector_stats(episode_rewards)
+        stats["episode_discounted_rewards"] = self.get_vector_stats(episode_discounted_rewards)
         stats["episode_frames"] = self.get_vector_stats(episode_nr_frames)
         stats["episode_losses"] = self.get_vector_stats(ep_losses)
         stats["episode_max_qs"] = self.get_vector_stats(ep_max_qs)
@@ -724,6 +738,7 @@ class AgentDQN:
         self.logger.info(f"Starting validation epoch at t = {self.t}")
 
         epoch_episode_rewards = []
+        epoch_episode_discounted_rewards = []
         epoch_episode_nr_frames = []
         epoch_max_qs = []
         valiation_t = 0
@@ -733,6 +748,7 @@ class AgentDQN:
         while valiation_t < self.validation_step_cnt:
             (
                 current_episode_reward,
+                current_episode_discounted_reward,
                 ep_frames,
                 ep_max_qs,
             ) = self.validate_episode()
@@ -740,6 +756,7 @@ class AgentDQN:
             valiation_t += ep_frames
 
             epoch_episode_rewards.append(current_episode_reward)
+            epoch_episode_discounted_rewards.append(current_episode_discounted_reward)
             epoch_episode_nr_frames.append(ep_frames)
             epoch_max_qs.extend(ep_max_qs)
 
@@ -748,6 +765,7 @@ class AgentDQN:
 
         epoch_stats = self.compute_validation_epoch_stats(
             epoch_episode_rewards,
+            epoch_episode_discounted_rewards,
             epoch_episode_nr_frames,
             epoch_max_qs,
             epoch_time,
@@ -757,6 +775,7 @@ class AgentDQN:
     def compute_validation_epoch_stats(
         self,
         episode_rewards,
+        episode_discounted_rewards,
         episode_nr_frames,
         ep_max_qs,
         epoch_time,
@@ -765,6 +784,7 @@ class AgentDQN:
 
         Args:
             episode_rewards (List): list contraining the final reward of each episode in the current epoch.
+            episode_discounted_rewards (List): list contraining the final discounted reward of each episode in the current epoch.
             episode_nr_frames (List): list contraining the final number of frames of each episode in the current epoch.
             ep_max_qs (List): list contraining maximum Q values from the current epoch.
             epoch_time (float): How much time the epoch took to compute in seconds.
@@ -777,6 +797,7 @@ class AgentDQN:
         stats["frame_stamp"] = self.t
 
         stats["episode_rewards"] = self.get_vector_stats(episode_rewards)
+        stats["episode_discounted_rewards"] = self.get_vector_stats(episode_discounted_rewards)
         stats["episode_frames"] = self.get_vector_stats(episode_nr_frames)
         stats["episode_max_qs"] = self.get_vector_stats(ep_max_qs)
         stats["epoch_time"] = epoch_time
@@ -794,6 +815,8 @@ class AgentDQN:
                                     The fourth element is a dictionary containing the number of times each reward was seen.
         """
         current_episode_reward = 0.0
+        current_episode_discounted_reward = 0.0
+        discount_factor = 1.0
         ep_frames = 0
         max_qs = []
 
@@ -813,10 +836,12 @@ class AgentDQN:
 
             max_qs.append(max_q)
             current_episode_reward += reward
+            current_episode_discounted_reward += discount_factor * reward
+            discount_factor *= self.gamma
             ep_frames += 1
             s = s_prime
 
-        return (current_episode_reward, ep_frames, max_qs)
+        return (current_episode_reward, current_episode_discounted_reward, ep_frames, max_qs)
 
     def display_validation_epoch_info(self, stats):
         self.logger.info(

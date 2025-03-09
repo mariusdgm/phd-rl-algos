@@ -17,7 +17,7 @@ agent_params:
     target_model_update_freq: 4000
     loss_fcn: mse_loss
 
-    gamma: 0.99 
+    gamma: 0.90 
     
     epsilon:
       start: 1.0
