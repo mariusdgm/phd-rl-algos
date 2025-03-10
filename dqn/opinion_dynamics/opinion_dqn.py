@@ -218,7 +218,7 @@ class AgentDQN:
             n_step=buffer_settings.get("n_step", 0),
         )
 
-        self.betas = [0, 1]
+        self.betas = [0, 0.5, 1]
 
         self.logger.info("Loaded configuration settings.")
 

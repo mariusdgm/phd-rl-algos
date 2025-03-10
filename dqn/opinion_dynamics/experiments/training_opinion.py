@@ -79,7 +79,7 @@ def run(opts: Dict) -> True:
         experiment_agent.train(train_epochs=config["epochs_to_train"])
 
         logger.info(
-            f'Finished training experiment: {config["full_title"]}, seed: {config["seed"]}'
+            f'Finished training experiment: {config["full_title"]}, run_id: {config["run_id"]}'
         )
 
         my_logging.cleanup_file_handlers(experiment_logger=logger)
