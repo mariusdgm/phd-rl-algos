@@ -6,29 +6,17 @@ import pickle
 
 
 class ReplayBuffer:
-    def __init__(self, max_size, state_dim, action_dim, n_step):
+    def __init__(self, max_size, state_dim, action_dim, n_step, gamma = 0.9):
         self.max_size = max_size
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.n_step = n_step
         self.buffer = deque(maxlen=self.max_size)
+        self.gamma = gamma
 
     def __len__(self):
         return len(self.buffer)
 
-    def _normalize_state(self, state):
-        """
-        Ensure that states are 2D tensors with shape (1, state_dim).
-        If the state is 1D, unsqueeze it to make it 2D.
-        """
-        if isinstance(state, torch.Tensor):
-            state = state.float()
-        else:
-            state = torch.tensor(state, dtype=torch.float32)
-
-        if state.ndim == 1:  # If 1D, add a batch dimension
-            state = state.unsqueeze(0)
-        return state
 
     def append(self, state, action, reward, next_state, done):
         """
@@ -73,15 +61,15 @@ class ReplayBuffer:
             reward = 0
             for i in range(self.n_step):
                 _, action, r, _, _ = samples[i * stride]
-                reward += r * pow(0.99, i)
+                reward += r * pow(self.gamma, i)
 
             transitions.append((state, action, reward, next_state, done))
 
         states, actions, rewards, next_states, dones = zip(*transitions)
 
         # Normalize and stack outputs
-        states = torch.cat([self._normalize_state(s) for s in states], dim=0)
-        next_states = torch.cat([self._normalize_state(s) for s in next_states], dim=0)
+        states = torch.cat([s for s in states], dim=0)
+        next_states = torch.cat([s for s in next_states], dim=0)
         actions = torch.tensor(actions, dtype=torch.float32)
         rewards = torch.tensor(rewards, dtype=torch.float32)
         dones = torch.tensor(dones, dtype=torch.float32)

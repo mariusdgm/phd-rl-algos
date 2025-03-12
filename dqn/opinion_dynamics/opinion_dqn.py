@@ -204,7 +204,6 @@ class AgentDQN:
             decay=eps_settings["decay"],
             eps_decay_start=self.replay_start_size,
         )
-        self.gamma = agent_params.get("gamma", 0.90)
 
         self._read_and_init_envs()  # sets up in_features etc...
 
@@ -414,7 +413,7 @@ class AgentDQN:
         self, state: torch.Tensor, epsilon: float = None, random_action: bool = False
     ):
         """
-        Select an action by evaluating the Q-function over the \(\beta\) grid.
+        Select an action by evaluating the Q-function over the β grid.
 
         Args:
             state (torch.Tensor): Current state.
@@ -422,7 +421,10 @@ class AgentDQN:
             random_action (bool, optional): Whether to select a random action. Defaults to False.
 
         Returns:
-            Tuple[np.ndarray, float]: The action (control input \( u \)) and the corresponding Q-value (or None if exploration).
+            Tuple[np.ndarray, Optional[torch.Tensor], Optional[float]]:
+                - The action (control input u) as a NumPy array,
+                - The chosen beta index tensor (or None if random),
+                - The corresponding Q-value (or None if random).
         """
         with torch.no_grad():
             self.logger.debug(f"State shape before forward pass: {state.shape}")
@@ -432,26 +434,30 @@ class AgentDQN:
             w_star = self.compute_w_star(A_diag, b)
             q_values = self.compute_q_values(w_star, A_diag, b, c)
 
+            # Get the best discrete β index (0,1,2 for three levels).
             max_q, beta_idx = q_values.max(dim=1)
             optimal_w = w_star[torch.arange(w_star.shape[0]), beta_idx]
-            betas = torch.tensor(
-                [self.betas[idx] for idx in beta_idx], dtype=torch.float32
+            # For computing the control, retrieve the actual β value.
+            beta_values = torch.tensor(
+                [self.betas[int(idx.item())] for idx in beta_idx], dtype=torch.float32
             )
 
             if random_action or (epsilon is not None and np.random.rand() < epsilon):
                 noise_amplitude = epsilon if epsilon is not None else 0.1
                 noise = torch.randn_like(optimal_w) * noise_amplitude
-
                 noisy_w = optimal_w + noise
                 noisy_w = torch.clamp(noisy_w, 1e-3, None)
                 noisy_w = noisy_w / (noisy_w.sum(dim=-1, keepdim=True) + 1e-8)
-                u = self.compute_action_from_w(noisy_w, betas)
+                u = self.compute_action_from_w(noisy_w, beta_values)
+                return (
+                    u.cpu().numpy(),
+                    None,
+                    None,
+                )  # When random, we return no discrete index.
 
-                return u.cpu().numpy(), None
-
-            # Exploitation: compute the optimal action
-            u = self.compute_action_from_w(optimal_w, betas)
-            return u.cpu().numpy(), max_q.cpu().item()
+            u = self.compute_action_from_w(optimal_w, beta_values)
+            # Return the continuous control u, AND the discrete index beta_idx.
+            return u.cpu().numpy(), beta_idx, max_q.cpu().item()
 
     def train(self, train_epochs: int) -> True:
         """The main call for the training loop of the DQN Agent.
@@ -535,7 +541,9 @@ class AgentDQN:
                 # we only want to append these stats if the episode was completed,
                 # otherwise it means it was stopped due to the nr of frames criterion
                 epoch_episode_rewards.append(current_episode_reward)
-                epoch_episode_discounted_rewards.append(current_episode_discounted_reward)
+                epoch_episode_discounted_rewards.append(
+                    current_episode_discounted_reward
+                )
                 epoch_episode_nr_frames.append(ep_frames)
                 epoch_losses.extend(ep_losses)
                 epoch_max_qs.extend(ep_max_qs)
@@ -577,10 +585,13 @@ class AgentDQN:
         is_terminated = False
         while (not is_terminated) and (epoch_t < train_frames):
             self.logger.debug(f"State (s) shape before step: {self.train_s.shape}")
-            action, max_q = self.select_action(
+
+            action, beta_idx, max_q = self.select_action(
                 torch.tensor(self.train_s, dtype=torch.float32),
                 epsilon=self.epsilon_by_frame(self.t),
             )
+            action = np.squeeze(action)
+
             self.logger.debug(f"State shape: {self.train_s.shape}")
             self.logger.debug(f"Action shape: {action.shape}")
 
@@ -591,8 +602,13 @@ class AgentDQN:
 
             self.logger.debug(f"State (s') shape after step: {s_prime.shape}")
 
+            if beta_idx is None:
+                discrete_action = np.array([0], dtype=np.int64)
+            else:
+                discrete_action = beta_idx.cpu().numpy()
+
             self.replay_buffer.append(
-                self.train_s, action, reward, s_prime, is_terminated
+                self.train_s, discrete_action, reward, s_prime, is_terminated
             )
             self.max_qs.append(max_q)
 
@@ -642,7 +658,7 @@ class AgentDQN:
         self.current_episode_reward = 0.0
         self.current_episode_discounted_reward = 0.0
         self.discount_factor = 1.0
-        
+
         self.ep_frames = 0
         self.losses = []
         self.max_qs = []
@@ -701,7 +717,9 @@ class AgentDQN:
         stats["frame_stamp"] = self.t
 
         stats["episode_rewards"] = self.get_vector_stats(episode_rewards)
-        stats["episode_discounted_rewards"] = self.get_vector_stats(episode_discounted_rewards)
+        stats["episode_discounted_rewards"] = self.get_vector_stats(
+            episode_discounted_rewards
+        )
         stats["episode_frames"] = self.get_vector_stats(episode_nr_frames)
         stats["episode_losses"] = self.get_vector_stats(ep_losses)
         stats["episode_max_qs"] = self.get_vector_stats(ep_max_qs)
@@ -797,7 +815,9 @@ class AgentDQN:
         stats["frame_stamp"] = self.t
 
         stats["episode_rewards"] = self.get_vector_stats(episode_rewards)
-        stats["episode_discounted_rewards"] = self.get_vector_stats(episode_discounted_rewards)
+        stats["episode_discounted_rewards"] = self.get_vector_stats(
+            episode_discounted_rewards
+        )
         stats["episode_frames"] = self.get_vector_stats(episode_nr_frames)
         stats["episode_max_qs"] = self.get_vector_stats(ep_max_qs)
         stats["epoch_time"] = epoch_time
@@ -825,7 +845,7 @@ class AgentDQN:
 
         is_terminated = False
         while (not is_terminated) and (ep_frames < self.validation_step_cnt):
-            action, max_q = self.select_action(
+            action, betas, max_q = self.select_action(
                 torch.tensor(s, dtype=torch.float32), epsilon=self.validation_epsilon
             )
             action = np.squeeze(action)
@@ -841,7 +861,12 @@ class AgentDQN:
             ep_frames += 1
             s = s_prime
 
-        return (current_episode_reward, current_episode_discounted_reward, ep_frames, max_qs)
+        return (
+            current_episode_reward,
+            current_episode_discounted_reward,
+            ep_frames,
+            max_qs,
+        )
 
     def display_validation_epoch_info(self, stats):
         self.logger.info(
@@ -862,9 +887,10 @@ class AgentDQN:
         """Compute the loss with TD learning."""
         states, actions, rewards, next_states, dones = sample
 
-        states = torch.tensor(np.array(states), dtype=torch.float32)
-        next_states = torch.tensor(np.array(next_states), dtype=torch.float32)
-        actions = torch.tensor(np.array(actions), dtype=torch.float32)
+        # Use np.stack to force numeric arrays.
+        states = torch.tensor(np.stack(states), dtype=torch.float32)
+        next_states = torch.tensor(np.stack(next_states), dtype=torch.float32)
+        actions = torch.tensor(np.stack(actions), dtype=torch.long).squeeze(1)
         rewards = torch.tensor(np.array(rewards), dtype=torch.float32).unsqueeze(1)
         dones = torch.tensor(np.array(dones), dtype=torch.float32).unsqueeze(1)
 
@@ -877,46 +903,24 @@ class AgentDQN:
         self.logger.debug(f"Dones shape: {dones.shape}")
 
         self.policy_model.train()
-
-        # Forward pass through the policy model
         A_diag, b, c = self.policy_model(states)
-
         self.logger.debug(f"A_diag shape: {A_diag.shape}, b shape: {b.shape}")
 
-        # Compute \( w^* \)
         w_star = self.compute_w_star(A_diag, b)
-
-        # Compute Q-values
         q_values = self.compute_q_values(w_star, A_diag, b, c)
 
-        # Select Q-value corresponding to the chosen action
-        self.logger.debug(f"Q-values shape: {q_values.shape}")
-        self.logger.debug(f"Actions shape: {actions.shape}")
+        # Gather Q-value corresponding to the stored discrete action.
+        selected_q_value = q_values.gather(1, actions.unsqueeze(1))
 
-        beta_indices = q_values.argmax(dim=1, keepdim=True)
-        selected_q_value = q_values.gather(1, beta_indices)
-
-        # Forward pass through the target model for next states
         next_A_diag, next_b, next_c = self.target_model(next_states)
-
-        # Compute \( b^T A^{-1} b \) for the target model
         next_A_inv = 1.0 / next_A_diag
         next_A_inv_b = next_A_inv * next_b
         next_b_A_inv_b = torch.sum(next_b * next_A_inv_b, dim=2)
-
-        # Compute Q-values for next states
         next_q_full = next_c + (-0.5 * next_b_A_inv_b)
-
-        # Compute the maximum Q-value for the next states
         max_next_q_values = next_q_full.max(dim=1, keepdim=True)[0]
-
-        # Compute the TD target
         expected_q_value = rewards + self.gamma * max_next_q_values * (1 - dones)
 
-        # Compute the loss
         loss = F.mse_loss(selected_q_value, expected_q_value)
-
-        # Backpropagation
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
