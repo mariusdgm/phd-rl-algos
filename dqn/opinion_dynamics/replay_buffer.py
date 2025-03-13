@@ -6,7 +6,7 @@ import pickle
 
 
 class ReplayBuffer:
-    def __init__(self, max_size, state_dim, action_dim, n_step, gamma = 0.9):
+    def __init__(self, max_size, state_dim, action_dim=1, n_step=0, gamma=0.9):
         self.max_size = max_size
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -16,7 +16,6 @@ class ReplayBuffer:
 
     def __len__(self):
         return len(self.buffer)
-
 
     def append(self, state, action, reward, next_state, done):
         """

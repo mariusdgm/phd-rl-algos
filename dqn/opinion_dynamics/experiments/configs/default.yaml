@@ -1,6 +1,6 @@
 experiment: "opinion_agent_dqn"
 
-epochs_to_train: 3
+epochs_to_train: 15
 environment: [opinion_net]
 
 agent_params:
@@ -22,7 +22,7 @@ agent_params:
     epsilon:
       start: 1.0
       end: 0.01
-      decay: 250_000
+      decay: 250_000_0
 
 estimator:
   model: OpinionNet
@@ -37,5 +37,4 @@ optim:
 
 replay_buffer:
   max_size: 100_000
-  action_dim: 1
   n_step: 0

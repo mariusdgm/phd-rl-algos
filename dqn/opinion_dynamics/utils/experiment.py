@@ -105,12 +105,12 @@ def build_environment():
         connectivity_matrix=connectivity_matrix,
         initial_opinions=initial_opinions,
         max_u=0.4,
-        budget=100.0,
-        desired_opinion=0.8,
+        budget=1000.0,
+        desired_opinion=1,
         tau=0.1,
         max_steps=100,
         opinion_end_tolerance=0.02,
-        control_beta=2,
+        control_beta=0.4,
     )
 
     env.reset()

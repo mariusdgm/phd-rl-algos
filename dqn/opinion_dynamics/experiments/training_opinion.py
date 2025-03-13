@@ -1,4 +1,5 @@
 import os, sys
+import logging
 
 def get_dir_n_levels_up(path, n):
     # Go up n levels from the given path
@@ -43,6 +44,7 @@ def run(opts: Dict) -> True:
         logger = my_logging.setup_logger(
             name=config["experiment"],
             log_file=logs_file,
+            # level=logging.DEBUG,
         )
 
         logger.info(f"Starting experiment: {config['full_title']}")
