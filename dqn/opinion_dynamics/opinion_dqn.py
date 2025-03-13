@@ -409,6 +409,23 @@ class AgentDQN:
 
         return u
 
+    def apply_action_noise(self, w, noise_amplitude):
+        """
+        Add noise to the weight vector w.
+
+        Args:
+            w (torch.Tensor): The optimal weight vector computed from the network.
+            noise_amplitude (float): The scale of the Gaussian noise.
+
+        Returns:
+            torch.Tensor: The noisy, normalized weight vector.
+        """
+        noise = torch.randn_like(w) * noise_amplitude
+        noisy_w = w + noise
+        noisy_w = torch.clamp(noisy_w, 1e-3, None)
+        noisy_w = noisy_w / (noisy_w.sum(dim=-1, keepdim=True) + 1e-8)
+        return noisy_w
+
     def select_action(
         self, state: torch.Tensor, epsilon: float = None, random_action: bool = False
     ):
@@ -421,11 +438,15 @@ class AgentDQN:
             random_action (bool, optional): Whether to select a random action. Defaults to False.
 
         Returns:
-            Tuple[np.ndarray, Optional[torch.Tensor], Optional[float]]:
-                - The action (control input u) as a NumPy array,
-                - The chosen beta index tensor (or None if random),
-                - The corresponding Q-value (or None if random).
+            Tuple[np.ndarray, np.ndarray, Optional[float]]:
+                - The action (continuous control u) as a NumPy array,
+                - The chosen discrete beta index as a NumPy array of type np.int64,
+                - The corresponding Q-value (or None if in random mode).
         """
+        # Ensure state is batched.
+        if state.dim() == 1:
+            state = state.unsqueeze(0)
+
         with torch.no_grad():
             self.logger.debug(f"State shape before forward pass: {state.shape}")
             A_diag, b, c = self.policy_model(state)  # Forward pass
@@ -434,30 +455,45 @@ class AgentDQN:
             w_star = self.compute_w_star(A_diag, b)
             q_values = self.compute_q_values(w_star, A_diag, b, c)
 
-            # Get the best discrete β index (0,1,2 for three levels).
+            if random_action or (epsilon is not None and np.random.rand() < epsilon):
+                # Randomly select a discrete β index for each sample.
+                rand_idx = torch.tensor(
+                    [
+                        random.randint(0, len(self.betas) - 1)
+                        for _ in range(state.shape[0])
+                    ],
+                    dtype=torch.long,
+                )
+                # Retrieve corresponding β values.
+                rand_beta_values = torch.tensor(
+                    [self.betas[int(idx.item())] for idx in rand_idx],
+                    dtype=torch.float32,
+                )
+                # Use the weight vector corresponding to the random index.
+                w_rand = w_star[torch.arange(w_star.shape[0]), rand_idx]
+                u = self.compute_action_from_w(w_rand, rand_beta_values)
+                # Retrieve the Q-value corresponding to the random β.
+                q_rand = q_values.gather(1, rand_idx.unsqueeze(1)).squeeze(1)
+                # Convert discrete beta index to NumPy int64 array.
+                return (
+                    u.cpu().numpy(),
+                    rand_idx.cpu().numpy().astype(np.int64),
+                    q_rand.cpu().item(),
+                )
+
+            # Exploitation: choose the best discrete β index.
             max_q, beta_idx = q_values.max(dim=1)
             optimal_w = w_star[torch.arange(w_star.shape[0]), beta_idx]
-            # For computing the control, retrieve the actual β value.
+            # Retrieve the corresponding β values.
             beta_values = torch.tensor(
                 [self.betas[int(idx.item())] for idx in beta_idx], dtype=torch.float32
             )
-
-            if random_action or (epsilon is not None and np.random.rand() < epsilon):
-                noise_amplitude = epsilon if epsilon is not None else 0.1
-                noise = torch.randn_like(optimal_w) * noise_amplitude
-                noisy_w = optimal_w + noise
-                noisy_w = torch.clamp(noisy_w, 1e-3, None)
-                noisy_w = noisy_w / (noisy_w.sum(dim=-1, keepdim=True) + 1e-8)
-                u = self.compute_action_from_w(noisy_w, beta_values)
-                return (
-                    u.cpu().numpy(),
-                    None,
-                    None,
-                )  # When random, we return no discrete index.
-
             u = self.compute_action_from_w(optimal_w, beta_values)
-            # Return the continuous control u, AND the discrete index beta_idx.
-            return u.cpu().numpy(), beta_idx, max_q.cpu().item()
+            return (
+                u.cpu().numpy(),
+                beta_idx.cpu().numpy().astype(np.int64),
+                max_q.cpu().item(),
+            )
 
     def train(self, train_epochs: int) -> True:
         """The main call for the training loop of the DQN Agent.
@@ -602,13 +638,8 @@ class AgentDQN:
 
             self.logger.debug(f"State (s') shape after step: {s_prime.shape}")
 
-            if beta_idx is None:
-                discrete_action = np.array([0], dtype=np.int64)
-            else:
-                discrete_action = beta_idx.cpu().numpy()
-
             self.replay_buffer.append(
-                self.train_s, discrete_action, reward, s_prime, is_terminated
+                self.train_s, beta_idx, reward, s_prime, is_terminated
             )
             self.max_qs.append(max_q)
 

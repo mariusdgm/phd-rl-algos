@@ -24,6 +24,12 @@ class OpinionNet(nn.Module):
         self.predict_A_b_c = nn.Linear(
             self.lin_hidden_out_size, self.nr_betas * (2 * self.nr_agents + 1)
         )
+        
+        with torch.no_grad():
+            full_bias = self.predict_A_b_c.bias  # shape: (nr_betas * (2*n + 1),)
+            block_size = 2 * self.nr_agents + 1
+            for j in range(self.nr_betas):
+                full_bias[j * block_size] = 0.0  # Initialize c_j to 0.
 
     def forward(self, x):
         """
