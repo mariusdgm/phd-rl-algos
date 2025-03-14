@@ -109,7 +109,7 @@ def build_environment():
         desired_opinion=1,
         tau=0.1,
         max_steps=100,
-        opinion_end_tolerance=0.02,
+        opinion_end_tolerance=0.05,
         control_beta=0.4,
     )
 
