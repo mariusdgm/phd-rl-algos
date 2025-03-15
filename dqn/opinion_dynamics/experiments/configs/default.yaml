@@ -8,7 +8,7 @@ agent_params:
   args_:
     train_step_cnt: 200_000
     validation_enabled: True
-    validation_step_cnt: 125_000
+    validation_step_cnt: 5000
     validation_epsilon: 0.001
     replay_start_size: 5_000
     
@@ -22,7 +22,7 @@ agent_params:
     epsilon:
       start: 1.0
       end: 0.01
-      decay: 400_000_0
+      decay: 250_000_0
 
 estimator:
   model: OpinionNet
@@ -36,5 +36,5 @@ optim:
     eps: 0.0003125
 
 replay_buffer:
-  max_size: 100_000
+  max_size: 500_000
   n_step: 0

@@ -553,6 +553,7 @@ class AgentDQN:
         while epoch_t < self.train_step_cnt:
             (
                 is_terminated,
+                truncated,
                 epoch_t,
                 current_episode_reward,
                 current_episode_discounted_reward,
@@ -566,9 +567,9 @@ class AgentDQN:
             policy_trained_times += ep_policy_trained_times
             target_trained_times += ep_target_trained_times
 
-            if is_terminated:
+            if is_terminated or truncated:
                 # we only want to append these stats if the episode was completed,
-                # otherwise it means it was stopped due to the nr of frames criterion
+                # otherwise it means it was stopped due to the agent nr of frames criterion
                 epoch_episode_rewards.append(current_episode_reward)
                 epoch_episode_discounted_rewards.append(
                     current_episode_discounted_reward
@@ -612,7 +613,8 @@ class AgentDQN:
         target_trained_times = 0
 
         is_terminated = False
-        while (not is_terminated) and (epoch_t < train_frames):
+        truncated = False
+        while (not is_terminated) and (not truncated) and (epoch_t < train_frames):
             self.logger.debug(f"State (s) shape before step: {self.train_s.shape}")
 
             action, beta_idx, max_q = self.select_action(
@@ -668,6 +670,7 @@ class AgentDQN:
 
         return (
             is_terminated,
+            truncated,
             epoch_t,
             self.current_episode_reward,
             self.current_episode_discounted_reward,
@@ -869,7 +872,8 @@ class AgentDQN:
         s = torch.tensor(s, device=device).float()
 
         is_terminated = False
-        while (not is_terminated) and (ep_frames < self.validation_step_cnt):
+        truncated = False
+        while (not is_terminated) and (not truncated) and (ep_frames < self.validation_step_cnt):
             action, betas, max_q = self.select_action(
                 torch.tensor(s, dtype=torch.float32), epsilon=self.validation_epsilon
             )
