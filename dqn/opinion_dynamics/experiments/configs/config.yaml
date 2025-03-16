@@ -1,12 +1,11 @@
 
 agent_params:
   args_:
-    training_freq: [2, 4]
-    gamma: [0.95, 0.99]
+    training_freq: [1, 2, 4]
+    gamma: [0.9, 0.95]
     
 
 optim:
   args_:
     lr: [0.01, 0.1]
-    eps: [0.00000001, 0.0003125]
 
