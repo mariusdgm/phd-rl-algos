@@ -1,6 +1,6 @@
 experiment: "opinion_agent_dqn"
 
-epochs_to_train: 10
+epochs_to_train: 20
 environment: [opinion_net]
 
 agent_params:
@@ -13,16 +13,16 @@ agent_params:
     replay_start_size: 5_000
     
     batch_size: 32
-    training_freq: 4
+    training_freq: 8
     target_model_update_freq: 4000
     loss_fcn: mse_loss
 
-    gamma: 0.99 
+    gamma: 0.9
     
     epsilon:
       start: 1.0
       end: 0.01
-      decay: 100_000_0
+      decay: 250_000_0
 
 estimator:
   model: OpinionNet
@@ -32,7 +32,7 @@ estimator:
 optim:
   name: Adam
   args_:
-    lr: 0.00025
+    lr: 0.0001
     eps: 0.0003125
 
 replay_buffer:

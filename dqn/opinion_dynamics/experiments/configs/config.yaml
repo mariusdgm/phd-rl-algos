@@ -1,11 +1,5 @@
 
-agent_params:
+estimator:
   args_:
-    training_freq: [1, 2, 4]
-    gamma: [0.9, 0.95]
-    
-
-optim:
-  args_:
-    lr: [0.01, 0.1]
+    lin_hidden_out_size: [8, 16,32]
 
