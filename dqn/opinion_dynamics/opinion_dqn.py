@@ -195,6 +195,8 @@ class AgentDQN:
         self.gamma = agent_params.get("gamma", 0.99)
         self.loss_function = agent_params.get("loss_fcn", "mse_loss")
 
+        self.betas = config.get("betas", [0, 0.5, 1])
+        
         eps_settings = agent_params.get(
             "epsilon", {"start": 1.0, "end": 0.01, "decay": 250_000}
         )
@@ -217,7 +219,6 @@ class AgentDQN:
             n_step=buffer_settings.get("n_step", 0),
         )
 
-        self.betas = [0, 0.5, 1]
 
         self.logger.info("Loaded configuration settings.")
 

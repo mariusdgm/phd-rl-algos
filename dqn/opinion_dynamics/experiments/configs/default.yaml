@@ -19,6 +19,8 @@ agent_params:
 
     gamma: 0.9
     
+    betas: [0, 1]
+
     epsilon:
       start: 1.0
       end: 0.01

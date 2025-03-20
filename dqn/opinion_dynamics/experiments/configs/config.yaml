@@ -1,5 +1,5 @@
 
 estimator:
   args_:
-    lin_hidden_out_size: [8, 16,32]
+    lin_hidden_out_size: [32, 64, 128]
 
