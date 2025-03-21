@@ -1,5 +1,8 @@
 
 estimator:
   args_:
-    lin_hidden_out_size: [32, 64, 128]
+    lin_hidden_out_size: [32, 64]
 
+agent_params:
+  args_:
+    action_w_noise_amplitude: [0, 0.1, 0.3]

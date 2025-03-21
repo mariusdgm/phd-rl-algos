@@ -195,7 +195,8 @@ class AgentDQN:
         self.gamma = agent_params.get("gamma", 0.99)
         self.loss_function = agent_params.get("loss_fcn", "mse_loss")
 
-        self.betas = config.get("betas", [0, 0.5, 1])
+        self.action_w_noise_amplitude = agent_params.get("action_w_noise_amplitude", 0.3)
+        self.betas = agent_params.get("betas", [0, 0.5, 1])
         
         eps_settings = agent_params.get(
             "epsilon", {"start": 1.0, "end": 0.01, "decay": 250_000}
@@ -398,17 +399,15 @@ class AgentDQN:
             beta (torch.Tensor): Beta values for each instance, shape (batch_size,).
 
         Returns:
-            torch.Tensor: Actions \( u \), scaled by max_u, shape (batch_size, num_agents).
+            torch.Tensor: Actions \( u \), scaled by max_u per agent, shape (batch_size, num_agents).
         """
         epsilon = 1e-8  # For numerical stability
 
         # Normalize weights
         w_normalized = w / (w.sum(dim=1, keepdim=True) + epsilon)
 
-        # Scale with beta and max_u
-        u = (
-            w_normalized * beta.unsqueeze(1) * self.train_env.max_u
-        )  # Apply max_u scaling
+        # Scale with beta and max_u per agent
+        u = w_normalized * beta.unsqueeze(1) * self.train_env.max_u * self.train_env.num_agents  # Scale max_u per node
 
         return u
 
@@ -457,6 +456,8 @@ class AgentDQN:
             w_star = self.compute_w_star(A_diag, b)  # shape: (B, J, N)
             q_values = self.compute_q_values(w_star, A_diag, b, c)  # shape: (B, J, N)
             
+            noise_amplitude = self.action_w_noise_amplitude * epsilon
+            
             if random_action or (epsilon is not None and np.random.rand() < epsilon):
                 # Randomly select a discrete beta index for each agent in each sample.
                 rand_idx = torch.tensor([[random.randint(0, len(self.betas)-1) 
@@ -469,6 +470,9 @@ class AgentDQN:
                 w_rand = torch.gather(w_star, 1, rand_idx.unsqueeze(1).expand(-1, w_star.shape[1], -1))
                 # Alternatively, if you want the beta index to select one weight per agent:
                 w_rand = w_star.gather(1, rand_idx.unsqueeze(1)).squeeze(1)  # shape: (B, N)
+                
+                w_rand = self.apply_action_noise(w_rand, noise_amplitude)
+                
                 u = self.compute_action_from_w(w_rand, rand_beta_values)  # shape: (B, N)
                 # Also gather corresponding Q-values.
                 q_rand = torch.gather(q_values, 1, rand_idx.unsqueeze(1)).squeeze(1)  # shape: (B, N)
@@ -484,6 +488,9 @@ class AgentDQN:
             # Retrieve the corresponding beta values.
             beta_values = torch.tensor([[self.betas[int(idx.item())] for idx in row]
                                         for row in beta_idx], dtype=torch.float32)  # shape: (B, N)
+            
+            optimal_w = self.apply_action_noise(optimal_w, noise_amplitude)
+
             u = self.compute_action_from_w(optimal_w, beta_values)  # shape: (B, N)
             # For reporting, aggregate the Q-values (e.g. take the mean over agents).
             max_q_mean = max_q.mean(dim=1)
