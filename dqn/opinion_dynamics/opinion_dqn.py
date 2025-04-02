@@ -362,7 +362,8 @@ class AgentDQN:
         w_star = -A_inv * b  # Compute raw w*
 
         # Ensure positivity
-        w_star = torch.clamp(w_star, min=0)
+        # TODO: might not need this line, try without. Maybe try with exp?
+        # w_star = torch.clamp(w_star, min=0)
 
         # Normalize weights to sum to 1 across agents
         w_star = w_star / (
@@ -405,13 +406,8 @@ class AgentDQN:
         Returns:
             torch.Tensor: Actions u, shape (batch_size, num_agents), capped at max_u per agent
         """
-        epsilon = 1e-8  # For stability
-
-        # Normalize weights per sample (not needed if you already normalize in w_star or noise step)
-        w_normalized = w / (w.sum(dim=1, keepdim=True) + epsilon)
-
         # Scale per-node: each u_i ≤ max_u
-        u = w_normalized * beta * self.train_env.max_u
+        u = w * beta * self.train_env.max_u
 
         # Optionally clip to make sure we’re safe
         u = torch.clamp(u, 0.0, self.train_env.max_u)
@@ -681,7 +677,8 @@ class AgentDQN:
             )
 
             self.logger.debug(f"State (s') shape after step: {s_prime.shape}")
-
+            
+            # TODO: need to save both betas and ws for complete action encoding
             self.replay_buffer.append(
                 self.train_s, beta_idx, reward, s_prime, is_terminated
             )

@@ -97,6 +97,8 @@ def build_environment():
     connectivity_matrix = create_adjacency_matrix_from_links(num_nodes, links)
     # connectivity_matrix = normalize_adjacency_matrix(connectivity_matrix)
 
+    # TODO: randomize initial opinions for each node
+
     initial_opinions = np.linspace(0.3, 0, num_nodes)
     # initial_opinions = np.linspace(0, 1, num_nodes)
     # initial_opinions = (np.mod(np.arange(0, 0.1 * num_nodes, 0.1), 0.9)) + 0.1
