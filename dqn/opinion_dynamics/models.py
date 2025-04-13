@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from collections import OrderedDict
 import numpy as np
+import torch.nn.functional as F
 
 
 class OpinionNet(nn.Module):
@@ -53,8 +54,7 @@ class OpinionNet(nn.Module):
         A_b_c_net = self.predict_A_b_c(features)  # Shape: (batch_size, nr_betas * (2 * nr_agents + 1))
         A_b_c_net = A_b_c_net.view(-1, self.nr_betas, 2 * self.nr_agents + 1)
 
-        # TODO: instead of applying exp, use activation function
-        A_diag = torch.exp(A_b_c_net[:, :, 1 : self.nr_agents + 1])  # Positive definite diagonal
+        A_diag = F.softplus(A_b_c_net[:, :, 1 : self.nr_agents + 1]) + 1e-6  # Positive definite diagonal
         b = A_b_c_net[:, :, self.nr_agents + 1 :]  # Bias vectors
         c = A_b_c_net[:, :, 0]
 
