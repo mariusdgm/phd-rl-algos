@@ -15,6 +15,7 @@ class ReplayBuffer:
         self.gamma = gamma
 
     def __len__(self):
+        
         return len(self.buffer)
 
     def append(self, state, action, reward, next_state, done):
@@ -25,8 +26,10 @@ class ReplayBuffer:
         # Ensure consistent dimensionality for states and next_states
         state = np.array(state).reshape(-1)  # Flatten to 1D
         next_state = np.array(next_state).reshape(-1)  # Flatten to 1D
-        action = np.array(action).reshape(-1)  # Flatten to 1D
-        self.buffer.append((state, action, reward, next_state, done))
+        beta_idx, w = action
+        beta_idx = int(beta_idx)  # Just to be safe
+        w = np.array(w).reshape(-1)
+        self.buffer.append((state, (beta_idx, w), reward, next_state, done))
 
     def sample(self, batch_size):
         """
@@ -39,7 +42,17 @@ class ReplayBuffer:
         samples = random.sample(self.buffer, batch_size)
         states, actions, rewards, next_states, dones = zip(*samples)
 
-        return states, actions, rewards, next_states, dones
+        # Split action into beta indices and w vectors
+        beta_indices, ws = zip(*actions)
+
+        states = torch.tensor(np.stack(states), dtype=torch.float32)
+        next_states = torch.tensor(np.stack(next_states), dtype=torch.float32)
+        beta_indices = torch.tensor(beta_indices, dtype=torch.long)
+        ws = torch.tensor(np.stack(ws), dtype=torch.float32)
+        rewards = torch.tensor(rewards, dtype=torch.float32)
+        dones = torch.tensor(dones, dtype=torch.float32)
+
+        return states, (beta_indices, ws), rewards, next_states, dones
 
     def sample_n_step(self, batch_size, stride=1):
         """

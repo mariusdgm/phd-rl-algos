@@ -449,6 +449,7 @@ class AgentDQN:
             Tuple[np.ndarray, np.ndarray, Optional[float]]:
                 - The action (continuous control u) as a NumPy array,
                 - The chosen discrete beta index as a NumPy array of type np.int64,
+                - The resulting W as a NumPy array,
                 - The corresponding Q-value (or None if in random mode).
         """
         if state.dim() == 1:
@@ -506,6 +507,7 @@ class AgentDQN:
                 return (
                     u.cpu().numpy(),
                     rand_idx.cpu().numpy().astype(np.int64),
+                    w_rand.cpu().numpy(),
                     q_rand_mean.cpu().item(),
                 )
 
@@ -529,6 +531,7 @@ class AgentDQN:
             return (
                 u.cpu().numpy(),
                 beta_idx.cpu().numpy().astype(np.int64),
+                optimal_w.cpu().numpy(),
                 max_q_mean.cpu().item(),
             )
 
@@ -661,7 +664,7 @@ class AgentDQN:
         while (not is_terminated) and (not truncated) and (epoch_t < train_frames):
             self.logger.debug(f"State (s) shape before step: {self.train_s.shape}")
 
-            action, beta_idx, max_q = self.select_action(
+            action, beta_idx, w, max_q = self.select_action(
                 torch.tensor(self.train_s, dtype=torch.float32),
                 epsilon=self.epsilon_by_frame(self.t),
             )
@@ -678,9 +681,8 @@ class AgentDQN:
 
             self.logger.debug(f"State (s') shape after step: {s_prime.shape}")
             
-            # TODO: need to save both betas and ws for complete action encoding
             self.replay_buffer.append(
-                self.train_s, beta_idx, reward, s_prime, is_terminated
+                self.train_s, (beta_idx, w), reward, s_prime, is_terminated
             )
             self.max_qs.append(max_q)
 
@@ -923,7 +925,7 @@ class AgentDQN:
             and (not truncated)
             and (ep_frames < self.validation_step_cnt)
         ):
-            action, betas, max_q = self.select_action(
+            action, betas, w, max_q = self.select_action(
                 torch.tensor(s, dtype=torch.float32), epsilon=self.validation_epsilon
             )
             action = np.squeeze(action)
@@ -963,20 +965,16 @@ class AgentDQN:
 
     def model_learn(self, sample, debug=True):
         """Compute the loss with TD learning."""
-        states, actions, rewards, next_states, dones = sample
+        states, (beta_indices, ws), rewards, next_states, dones = sample
 
         states = torch.tensor(np.stack(states), dtype=torch.float32)
         next_states = torch.tensor(np.stack(next_states), dtype=torch.float32)
-        # Here, actions should be stored as an array of shape (B, n_agents)
-        actions = torch.tensor(
-            np.stack(actions), dtype=torch.long
-        )  # shape: (B, n_agents)
-        rewards = torch.tensor(np.array(rewards), dtype=torch.float32).unsqueeze(
-            1
-        )  # shape: (B, 1)
-        dones = torch.tensor(np.array(dones), dtype=torch.float32).unsqueeze(
-            1
-        )  # shape: (B, 1)
+
+        beta_indices = torch.tensor(beta_indices, dtype=torch.long)  # shape: (B,)
+        ws = torch.tensor(np.stack(ws), dtype=torch.float32)         # shape: (B, N)
+
+        rewards = torch.tensor(np.array(rewards), dtype=torch.float32).unsqueeze(1)
+        dones = torch.tensor(np.array(dones), dtype=torch.float32).unsqueeze(1)
 
         self.logger.debug(
             f"States shape: {states.shape}, Next States shape: {next_states.shape}"
