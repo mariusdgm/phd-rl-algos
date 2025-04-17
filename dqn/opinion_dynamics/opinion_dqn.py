@@ -976,36 +976,27 @@ class AgentDQN:
         rewards = torch.tensor(np.array(rewards), dtype=torch.float32).unsqueeze(1)
         dones = torch.tensor(np.array(dones), dtype=torch.float32).unsqueeze(1)
 
-        self.logger.debug(
-            f"States shape: {states.shape}, Next States shape: {next_states.shape}"
-        )
-        self.logger.debug(
-            f"Actions shape: {actions.shape}, Rewards shape: {rewards.shape}"
-        )
-        self.logger.debug(f"Dones shape: {dones.shape}")
+        self.logger.debug(f"States shape: {states.shape}, Next States shape: {next_states.shape}")
+        self.logger.debug(f"Beta indices shape: {beta_indices.shape}, W shape: {ws.shape}")
+        self.logger.debug(f"Rewards shape: {rewards.shape}, Dones shape: {dones.shape}")
 
         self.policy_model.train()
-        A_diag, b, c = self.policy_model(states)
-        self.logger.debug(f"A_diag shape: {A_diag.shape}, b shape: {b.shape}")
+        A_diag, b, c = self.policy_model(states)  # (B, J, N), (B, J, N), (B, J)
+        self.logger.debug(f"A_diag shape: {A_diag.shape}, b shape: {b.shape}, c shape: {c.shape}")
 
-        w_star = self.compute_w_star(A_diag, b)
-        q_values = self.compute_q_values(w_star, A_diag, b, c)  # shape: (B, J, N)
-        # Gather Q-values for the discrete action stored for each agent.
-        selected_q_value = torch.gather(
-            q_values, 1, actions.unsqueeze(1)
-        )  # shape: (B, 1, N)
-        # Aggregate over agents (for example, sum over agents) to get a scalar per sample.
-        selected_q_value = selected_q_value.squeeze(1).sum(
-            dim=1, keepdim=True
-        )  # shape: (B, 1)
+        q_values = self.compute_q_values(ws, A_diag, b, c)  # shape: (B, J, N)
+        
+        # Gather Q-values at the chosen beta index for each sample
+        beta_indices_expanded = beta_indices.unsqueeze(-1).unsqueeze(-1).expand(-1, 1, A_diag.shape[2])  # (B, 1, N)
+        selected_q_value = torch.gather(q_values, dim=1, index=beta_indices_expanded).squeeze(1)        # (B, N)
 
-        # For next states:
+        selected_q_value = selected_q_value.sum(dim=1, keepdim=True)  # shape: (B, 1)
+
+        # Next state values
         next_A_diag, next_b, next_c = self.target_model(next_states)
         w_star_next = self.compute_w_star(next_A_diag, next_b)
-        next_q_values = self.compute_q_values(
-            w_star_next, next_A_diag, next_b, next_c
-        )  # shape: (B, J, N)
-        # Choose best beta per agent and then aggregate.
+        next_q_values = self.compute_q_values(w_star_next, next_A_diag, next_b, next_c)  # (B, J, N)
+
         max_next_q, _ = next_q_values.max(dim=1)  # shape: (B, N)
         max_next_q = max_next_q.sum(dim=1, keepdim=True)  # shape: (B, 1)
 
