@@ -64,10 +64,102 @@ class OpinionNet(nn.Module):
 
         if w is not None:
             w = w.unsqueeze(1)  # (B, 1, N)
-            q = -0.5 * torch.sum(A_diag * (w ** 2), dim=2) + torch.sum(b * w, dim=2) + c  # (B, J)
+            q = self.compute_q_values(w, A_diag, b, c)  # (B, J)
             output["q"] = q
 
         return output
 
+    @staticmethod    
+    def compute_w_star(A_diag, b):
+        """
+        Compute the optimal weight allocation \( w^* \) given A_diag and b.
+
+        Args:
+            A_diag (torch.Tensor): Diagonal elements of A, shape (batch_size, nr_betas, nr_agents).
+            b (torch.Tensor): Bias term, shape (batch_size, nr_betas, nr_agents).
+
+        Returns:
+            torch.Tensor: Optimal weight allocation \( w^* \), shape (batch_size, nr_betas, nr_agents).
+        """
+        A_inv = 1.0 / A_diag  # Inverse of diagonal A
+        w_star = -A_inv * b  # Compute raw w*
+
+        # TODO: attempting to not use normalization in order to allow the agent to assign u_max to more nodes
+        # Normalize weights to sum to 1 across agents
+        # w_star = w_star / (
+        #     w_star.sum(dim=2, keepdim=True) + 1e-8
+        # )  
+        
+        # Ensure weights are non-negative
+        w_star = torch.clamp(w_star, min=0)
+
+        return w_star
+    
+    @staticmethod    
+    def compute_q_values(w_star, A_diag, b, c):
+        """
+        Compute Q-values using the optimal weight allocation w*.
+
+        Args:
+            w_star (torch.Tensor): Optimal weight allocation, shape (batch_size, nr_betas, nr_agents).
+            A_diag (torch.Tensor): Diagonal elements of A, shape (batch_size, nr_betas, nr_agents).
+            b (torch.Tensor): Bias term, shape (batch_size, nr_betas, nr_agents).
+            c (torch.Tensor): Free term, shape (batch_size, nr_betas).
+
+        Returns:
+            torch.Tensor: Computed Q-values, shape (batch_size, nr_betas).
+        """
+        quadratic_term = (
+            w_star * (A_diag * w_star)
+        ) / 2  # shape: (batch_size, nr_betas, n_agents)
+        linear_term = w_star * b  # shape: (batch_size, nr_betas, n_agents)
+        # Expand c to match the agent dimension: (batch_size, nr_betas) -> (batch_size, nr_betas, 1)
+        q_values = (
+            c.unsqueeze(2) - quadratic_term - linear_term
+        )  # shape: (batch_size, nr_betas, n_agents)
+        return q_values
+    
+    
+    @staticmethod
+    def apply_action_noise(w, noise_amplitude):
+        """
+        Add noise to the weight vector w.
+
+        Args:
+            w (torch.Tensor): The optimal weight vector computed from the network.
+            noise_amplitude (float): The scale of the Gaussian noise.
+
+        Returns:
+            torch.Tensor: The noisy, normalized weight vector.
+        """
+        noise = torch.randn_like(w) * noise_amplitude
+        noisy_w = w + noise
+        
+        # Not normalizing for now
+        # noisy_w = noisy_w / (noisy_w.sum(dim=-1, keepdim=True) + 1e-8)
+        
+        noisy_w = torch.clamp(noisy_w, min=0.0)
+        return noisy_w
+
+    @staticmethod
+    def compute_action_from_w(w: torch.Tensor, beta: torch.Tensor, max_u: float):
+        """
+        Compute the action u from allocation weights w and beta values.
+
+        Args:
+            w (torch.Tensor): Allocation weights, shape (batch_size, num_agents)
+            beta (torch.Tensor): Per-agent beta values, shape (batch_size, num_agents)
+            max_u (float): Maximum action value
+            
+        Returns:
+            torch.Tensor: Actions u, shape (batch_size, num_agents), capped at max_u per agent
+        """
+        # Scale per-node: each u_i ≤ max_u
+        u = w * beta * max_u
+
+        # Optionally clip to make sure we’re safe
+        u = torch.clamp(u, 0.0, max_u)
+
+        return u
 
 

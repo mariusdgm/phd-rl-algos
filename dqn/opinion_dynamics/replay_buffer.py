@@ -27,7 +27,7 @@ class ReplayBuffer:
         state = np.array(state).reshape(-1)  # Flatten to 1D
         next_state = np.array(next_state).reshape(-1)  # Flatten to 1D
         beta_idx, w = action
-        beta_idx = int(beta_idx)  # Just to be safe
+        beta_idx = np.array(beta_idx, dtype=np.int64)
         w = np.array(w).reshape(-1)
         self.buffer.append((state, (beta_idx, w), reward, next_state, done))
 
