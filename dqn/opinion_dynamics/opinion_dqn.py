@@ -220,6 +220,7 @@ class AgentDQN:
             state_dim=self.in_features,
             action_dim=self.train_env.action_space.shape[0],
             n_step=buffer_settings.get("n_step", 0),
+            betas=self.betas
         )
 
         self.logger.info("Loaded configuration settings.")
@@ -347,7 +348,6 @@ class AgentDQN:
 
         self.logger.debug(f"Training status saved at t = {self.t}")
 
-
     def select_action(
         self,
         state: torch.Tensor,
@@ -357,105 +357,125 @@ class AgentDQN:
         """
         Select an action by evaluating the Q-function over the β grid.
 
-        Args:
-            state (torch.Tensor): Current state.
-            epsilon (float, optional): Epsilon for exploration. Defaults to None.
-            random_action (bool, optional): Whether to select a random action. Defaults to False.
-
         Returns:
-            Tuple[np.ndarray, np.ndarray, Optional[float]]:
-                - The action (continuous control u) as a NumPy array,
-                - The chosen discrete beta index as a NumPy array of type np.int64,
-                - The resulting W as a NumPy array,
-                - The corresponding Q-value (or None if in random mode).
+            Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[float]]:
+                - u: continuous action (B, N)
+                - beta_idx: index of selected beta (B,)
+                - w: all candidate weight vectors (B, J, N)
+                - Q-value (scalar)
         """
         if state.dim() == 1:
             state = state.unsqueeze(0)
 
         with torch.no_grad():
-            self.logger.debug(f"State shape before forward pass: {state.shape}")
+            # === Forward pass ===
             abc_model = self.policy_model(state)
-            # shapes: A_diag: (B, J, N), b: (B, J, N), c: (B, J)
-            A_diag = abc_model["A_diag"]
-            b = abc_model["b"]
-            c = abc_model["c"]  
-            self.logger.debug(f"A_diag shape: {A_diag.shape}, b shape: {b.shape}")
+            A_diag, b, c = abc_model["A_diag"], abc_model["b"], abc_model["c"]
+            B, J, N = A_diag.shape
 
-            w_star = self.policy_model.compute_w_star(A_diag, b)  # shape: (B, J, N)
-            q_values = self.policy_model.compute_q_values(w_star, A_diag, b, c)  # shape: (B, J, N)
+            assert b.shape == (B, J, N), f"b shape mismatch: {b.shape}"
+            assert c.shape == (B, J), f"c shape mismatch: {c.shape}"
+
+            w_star = self.policy_model.compute_w_star(A_diag, b)  # (B, J, N)
+            q_values = self.policy_model.compute_q_values(
+                w_star, A_diag, b, c
+            )  # (B, J, N)
+
+            assert w_star.shape == (B, J, N), f"w_star shape mismatch: {w_star.shape}"
+            assert q_values.shape == (
+                B,
+                J,
+                N,
+            ), f"q_values shape mismatch: {q_values.shape}"
 
             noise_amplitude = self.action_w_noise_amplitude * epsilon
 
+            # === RANDOM ACTION BRANCH ===
             if random_action or (epsilon is not None and np.random.rand() < epsilon):
-                # Randomly select a single beta index per sample (shape: (B,))
-                rand_idx = torch.randint(
-                    low=0, high=len(self.betas), size=(state.shape[0],), dtype=torch.long
+                rand_idx = torch.randint(low=0, high=J, size=(B,), dtype=torch.long)
+                gather_idx = rand_idx.view(-1, 1, 1).expand(-1, 1, N)
+
+                assert rand_idx.shape == (B,), f"rand_idx shape: {rand_idx.shape}"
+                assert gather_idx.shape == (
+                    B,
+                    1,
+                    N,
+                ), f"gather_idx shape: {gather_idx.shape}"
+
+                w_rand = w_star.gather(1, gather_idx).squeeze(1)  # (B, N)
+                assert w_rand.shape == (B, N), f"w_rand shape: {w_rand.shape}"
+
+                w_rand_noisy = self.policy_model.apply_action_noise(
+                    w_rand, noise_amplitude
                 )
 
-                # Convert beta index to actual beta values and expand to agent dimension
-                rand_beta_values = torch.tensor(
-                    [self.betas[idx.item()] for idx in rand_idx], dtype=torch.float32
-                ).unsqueeze(1).expand(-1, self.train_env.num_agents)  # shape: (B, N)
+                rand_beta_values = (
+                    torch.tensor(
+                        [self.betas[i.item()] for i in rand_idx], dtype=torch.float32
+                    )
+                    .unsqueeze(1)
+                    .expand(-1, N)
+                )  # (B, N)
 
-                # Prepare gather index: shape (B, 1, N)
-                gather_idx = rand_idx.view(-1, 1, 1).expand(-1, 1, w_star.shape[2])
-
-                # Gather corresponding weight vectors (B, J, N) → (B, N)
-                w_rand = w_star.gather(1, gather_idx).squeeze(1)
-
-                # Apply noise
-                w_rand = self.policy_model.apply_action_noise(w_rand, noise_amplitude)
-
-                # Compute action
                 u = self.policy_model.compute_action_from_w(
-                    w_rand, rand_beta_values, self.train_env.max_u
-                )  # shape: (B, N)
+                    w_rand_noisy, rand_beta_values, self.train_env.max_u
+                )
 
-                # Gather corresponding Q-values
-                q_rand = q_values.gather(1, gather_idx).squeeze(1)  # shape: (B, N)
+                w_full = torch.zeros_like(w_star)
+                w_full.scatter_(1, gather_idx, w_rand_noisy.unsqueeze(1))  # (B, J, N)
+
+                q_rand = q_values.gather(1, gather_idx).squeeze(1)  # (B, N)
                 q_rand_mean = q_rand.mean(dim=1)
 
                 return (
-                    u.cpu().numpy(),
-                    rand_idx.cpu().numpy().astype(np.int64),
-                    w_rand.cpu().numpy(),
-                    q_rand_mean.cpu().item(),
+                    u.cpu().numpy(),  # (B, N)
+                    rand_idx.cpu().numpy().astype(np.int64),  # (B,)
+                    w_full.cpu().numpy(),  # (B, J, N)
+                    q_rand_mean.cpu().item(),  # scalar
                 )
 
-            # Get which beta to apply this step
+            # === GREEDY ACTION BRANCH ===
             q_values_mean = q_values.mean(dim=2)  # (B, J)
-            max_q, beta_idx = q_values_mean.max(dim=1)  # beta_idx: (B,)
-            
-            B = state.shape[0]
-            J = len(self.betas)
-            N = self.train_env.num_agents
+            max_q, beta_idx = q_values_mean.max(dim=1)  # (B,)
+            beta_idx_exp = beta_idx.unsqueeze(1).unsqueeze(2).expand(-1, 1, N)
 
-            assert w_star.shape == (B, J, N)
-            assert beta_idx.shape == (B,)
+            assert beta_idx.shape == (B,), f"beta_idx shape: {beta_idx.shape}"
+            assert beta_idx_exp.shape == (
+                B,
+                1,
+                N,
+            ), f"beta_idx_exp shape: {beta_idx_exp.shape}"
 
-            # Gather the corresponding weight vectors from w_star.
-            beta_idx_exp = beta_idx.unsqueeze(1).unsqueeze(2).expand(-1, 1, w_star.shape[2])  # (B, 1, N)
-            optimal_w = torch.gather(w_star, 1, beta_idx_exp).squeeze(1)  # (B, N)
-            
-            assert beta_idx.dim() == 1, f"Expected beta_idx to be 1D, got shape {beta_idx.shape}"
-            beta_values = torch.tensor(
-                [self.betas[int(idx.item())] for idx in beta_idx],
-                dtype=torch.float32,
-            ).unsqueeze(1).expand(-1, self.train_env.num_agents)  # shape: (B, N)
+            optimal_w = w_star.gather(1, beta_idx_exp).squeeze(1)  # (B, N)
+            assert optimal_w.shape == (B, N), f"optimal_w shape: {optimal_w.shape}"
 
-            optimal_w = self.policy_model.apply_action_noise(optimal_w, noise_amplitude)
+            optimal_w_noisy = self.policy_model.apply_action_noise(
+                optimal_w, noise_amplitude
+            )
 
-            u = self.policy_model.compute_action_from_w(optimal_w, beta_values, self.train_env.max_u)  # shape: (B, N)
-            
-            assert max_q.dim() == 1
-            
-            max_q_mean = max_q.mean()
-            
+            beta_values = (
+                torch.tensor(
+                    [self.betas[int(i)] for i in beta_idx], dtype=torch.float32
+                )
+                .unsqueeze(1)
+                .expand(-1, N)
+            )  # (B, N)
+
+            u = self.policy_model.compute_action_from_w(
+                optimal_w_noisy, beta_values, self.train_env.max_u
+            )
+
+            w_full = torch.zeros_like(w_star)
+            w_full.scatter_(1, beta_idx_exp, optimal_w_noisy.unsqueeze(1))  # (B, J, N)
+
+            assert u.shape == (B, N), f"u shape: {u.shape}"
+            assert max_q.dim() == 1, f"max_q should be 1D, got {max_q.shape}"
+
             return (
                 u.cpu().numpy(),
                 beta_idx.cpu().numpy().astype(np.int64),
-                optimal_w.cpu().numpy(),
-                max_q_mean.cpu().item(),
+                w_full.cpu().numpy(),
+                max_q.mean().item(),
             )
 
     def train(self, train_epochs: int) -> True:
@@ -603,7 +623,7 @@ class AgentDQN:
             )
 
             self.logger.debug(f"State (s') shape after step: {s_prime.shape}")
-            
+
             self.replay_buffer.append(
                 self.train_s, (beta_idx, w), reward, s_prime, is_terminated
             )
@@ -895,13 +915,17 @@ class AgentDQN:
 
         # beta_indices shape: (B,)
         beta_indices = torch.tensor(beta_indices, dtype=torch.long).view(-1)
-        ws = torch.tensor(np.stack(ws), dtype=torch.float32)         # shape: (B, N)
-
+        ws = torch.tensor(np.stack(ws), dtype=torch.float32)  # (B, J, N)
+        
         rewards = torch.tensor(np.array(rewards), dtype=torch.float32).unsqueeze(1)
         dones = torch.tensor(np.array(dones), dtype=torch.float32).unsqueeze(1)
 
-        self.logger.debug(f"States shape: {states.shape}, Next States shape: {next_states.shape}")
-        self.logger.debug(f"Beta indices shape: {beta_indices.shape}, W shape: {ws.shape}")
+        self.logger.debug(
+            f"States shape: {states.shape}, Next States shape: {next_states.shape}"
+        )
+        self.logger.debug(
+            f"Beta indices shape: {beta_indices.shape}, W shape: {ws.shape}"
+        )
         self.logger.debug(f"Rewards shape: {rewards.shape}, Dones shape: {dones.shape}")
 
         self.policy_model.train()
@@ -909,14 +933,26 @@ class AgentDQN:
         # shapes: A_diag: (B, J, N), b: (B, J, N), c: (B, J)
         A_diag = abc_model["A_diag"]
         b = abc_model["b"]
-        c = abc_model["c"]   
-        self.logger.debug(f"A_diag shape: {A_diag.shape}, b shape: {b.shape}, c shape: {c.shape}")
-
-        q_values = self.policy_model.compute_q_values(ws, A_diag, b, c)  # shape: (B, J, N)
+        c = abc_model["c"]
+        self.logger.debug(
+            f"A_diag shape: {A_diag.shape}, b shape: {b.shape}, c shape: {c.shape}"
+        )
         
+        assert ws.shape == A_diag.shape, f"ws: {ws.shape}, A_diag: {A_diag.shape}"
+
+        q_values = self.policy_model.compute_q_values(
+            ws, A_diag, b, c
+        )  # shape: (B, J, N)
+
         # Gather Q-values at the chosen beta index for each sample
-        beta_indices_expanded = beta_indices.unsqueeze(1).unsqueeze(2).expand(-1, 1, A_diag.shape[2]) # Expand to (B, 1, 1) to match gather shape (for Q-values of shape B x J x N)
-        selected_q_value = torch.gather(q_values, dim=1, index=beta_indices_expanded).squeeze(1)        # (B, N)
+        beta_indices_expanded = (
+            beta_indices.unsqueeze(1).unsqueeze(2).expand(-1, 1, A_diag.shape[2])
+        )  # Expand to (B, 1, 1) to match gather shape (for Q-values of shape B x J x N)
+        selected_q_value = torch.gather(
+            q_values, dim=1, index=beta_indices_expanded
+        ).squeeze(
+            1
+        )  # (B, N)
 
         selected_q_value = selected_q_value.sum(dim=1, keepdim=True)  # shape: (B, 1)
 
@@ -927,7 +963,9 @@ class AgentDQN:
         b_target = abc_model_target["b"]
         c_target = abc_model_target["c"]
         w_star_next = self.policy_model.compute_w_star(A_diag_target, b_target)
-        next_q_values = self.policy_model.compute_q_values(w_star_next, A_diag_target, b_target, c_target)  # (B, J, N)
+        next_q_values = self.policy_model.compute_q_values(
+            w_star_next, A_diag_target, b_target, c_target
+        )  # (B, J, N)
 
         max_next_q, _ = next_q_values.max(dim=1)  # shape: (B, N)
         max_next_q = max_next_q.sum(dim=1, keepdim=True)  # shape: (B, 1)

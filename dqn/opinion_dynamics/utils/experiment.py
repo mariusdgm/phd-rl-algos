@@ -99,8 +99,12 @@ def build_environment():
 
     # TODO: randomize initial opinions for each node
 
-    initial_opinions = np.linspace(0.3, 0, num_nodes)
+    initial_opinions = np.random.uniform(low=0.0, high=1.0, size=num_nodes)
+    
+    # initial_opinions = np.linspace(0.3, 0, num_nodes)
+    
     # initial_opinions = np.linspace(0, 1, num_nodes)
+    
     # initial_opinions = (np.mod(np.arange(0, 0.1 * num_nodes, 0.1), 0.9)) + 0.1
 
     env = NetworkGraph(

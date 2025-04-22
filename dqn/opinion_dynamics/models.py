@@ -25,7 +25,7 @@ class OpinionNet(nn.Module):
         self.predict_A_b_c = nn.Linear(
             self.lin_hidden_out_size, self.nr_betas * (2 * self.nr_agents + 1)
         )
-        
+
         with torch.no_grad():
             full_bias = self.predict_A_b_c.bias  # shape: (nr_betas * (2*n + 1),)
             block_size = 2 * self.nr_agents + 1
@@ -53,14 +53,10 @@ class OpinionNet(nn.Module):
         A_b_c_net = A_b_c_net.view(-1, self.nr_betas, 2 * self.nr_agents + 1)
 
         A_diag = F.softplus(A_b_c_net[:, :, 1 : self.nr_agents + 1]) + 1e-6  # (B, J, N)
-        b = A_b_c_net[:, :, self.nr_agents + 1 :]                            # (B, J, N)
-        c = A_b_c_net[:, :, 0]                                              # (B, J)
+        b = A_b_c_net[:, :, self.nr_agents + 1 :]  # (B, J, N)
+        c = A_b_c_net[:, :, 0]  # (B, J)
 
-        output = {
-            "A_diag": A_diag,
-            "b": b,
-            "c": c
-        }
+        output = {"A_diag": A_diag, "b": b, "c": c}
 
         if w is not None:
             w = w.unsqueeze(1)  # (B, 1, N)
@@ -69,7 +65,7 @@ class OpinionNet(nn.Module):
 
         return output
 
-    @staticmethod    
+    @staticmethod
     def compute_w_star(A_diag, b):
         """
         Compute the optimal weight allocation \( w^* \) given A_diag and b.
@@ -88,14 +84,14 @@ class OpinionNet(nn.Module):
         # Normalize weights to sum to 1 across agents
         # w_star = w_star / (
         #     w_star.sum(dim=2, keepdim=True) + 1e-8
-        # )  
-        
+        # )
+
         # Ensure weights are non-negative
         w_star = torch.clamp(w_star, min=0)
 
         return w_star
-    
-    @staticmethod    
+
+    @staticmethod
     def compute_q_values(w_star, A_diag, b, c):
         """
         Compute Q-values using the optimal weight allocation w*.
@@ -109,6 +105,10 @@ class OpinionNet(nn.Module):
         Returns:
             torch.Tensor: Computed Q-values, shape (batch_size, nr_betas).
         """
+        assert (
+            w_star.shape == A_diag.shape == b.shape
+        ), f"Shape mismatch: w_star={w_star.shape}, A_diag={A_diag.shape}, b={b.shape}"
+
         quadratic_term = (
             w_star * (A_diag * w_star)
         ) / 2  # shape: (batch_size, nr_betas, n_agents)
@@ -118,8 +118,7 @@ class OpinionNet(nn.Module):
             c.unsqueeze(2) - quadratic_term - linear_term
         )  # shape: (batch_size, nr_betas, n_agents)
         return q_values
-    
-    
+
     @staticmethod
     def apply_action_noise(w, noise_amplitude):
         """
@@ -134,10 +133,10 @@ class OpinionNet(nn.Module):
         """
         noise = torch.randn_like(w) * noise_amplitude
         noisy_w = w + noise
-        
+
         # Not normalizing for now
         # noisy_w = noisy_w / (noisy_w.sum(dim=-1, keepdim=True) + 1e-8)
-        
+
         noisy_w = torch.clamp(noisy_w, min=0.0)
         return noisy_w
 
@@ -150,7 +149,7 @@ class OpinionNet(nn.Module):
             w (torch.Tensor): Allocation weights, shape (batch_size, num_agents)
             beta (torch.Tensor): Per-agent beta values, shape (batch_size, num_agents)
             max_u (float): Maximum action value
-            
+
         Returns:
             torch.Tensor: Actions u, shape (batch_size, num_agents), capped at max_u per agent
         """
@@ -161,5 +160,3 @@ class OpinionNet(nn.Module):
         u = torch.clamp(u, 0.0, max_u)
 
         return u
-
-

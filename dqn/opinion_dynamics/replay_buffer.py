@@ -6,16 +6,19 @@ import pickle
 
 
 class ReplayBuffer:
-    def __init__(self, max_size, state_dim, action_dim=1, n_step=0, gamma=0.9):
+    def __init__(
+        self, max_size, state_dim, action_dim=1, n_step=0, gamma=0.9, betas=None
+    ):
         self.max_size = max_size
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.n_step = n_step
         self.buffer = deque(maxlen=self.max_size)
         self.gamma = gamma
+        self.betas = betas
 
     def __len__(self):
-        
+
         return len(self.buffer)
 
     def append(self, state, action, reward, next_state, done):
@@ -23,12 +26,18 @@ class ReplayBuffer:
         Append a transition to the replay buffer.
         Normalize the state and next_state tensors before storing.
         """
-        # Ensure consistent dimensionality for states and next_states
         state = np.array(state).reshape(-1)  # Flatten to 1D
-        next_state = np.array(next_state).reshape(-1)  # Flatten to 1D
+        next_state = np.array(next_state).reshape(-1)
+        
         beta_idx, w = action
         beta_idx = np.array(beta_idx, dtype=np.int64)
-        w = np.array(w).reshape(-1)
+        
+        # Fix over-wrapped dimensions (e.g., (1, J, N) → (J, N))
+        if w.ndim == 3 and w.shape[0] == 1:
+            w = w[0]  # (J, N)
+
+        assert w.ndim == 2, f"Expected w to be (J, N), got {w.shape}"
+
         self.buffer.append((state, (beta_idx, w), reward, next_state, done))
 
     def sample(self, batch_size):
