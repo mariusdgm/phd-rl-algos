@@ -80,11 +80,10 @@ class OpinionNet(nn.Module):
         A_inv = 1.0 / A_diag  # Inverse of diagonal A
         w_star = -A_inv * b  # Compute raw w*
 
-        # TODO: attempting to not use normalization in order to allow the agent to assign u_max to more nodes
-        # Normalize weights to sum to 1 across agents
-        # w_star = w_star / (
-        #     w_star.sum(dim=2, keepdim=True) + 1e-8
-        # )
+        # Normalize weights to sum to 1 across agents 
+        w_star = w_star / (
+            w_star.sum(dim=2, keepdim=True) + 1e-8
+        )
 
         # Ensure weights are non-negative
         w_star = torch.clamp(w_star, min=0)
@@ -109,14 +108,11 @@ class OpinionNet(nn.Module):
             w_star.shape == A_diag.shape == b.shape
         ), f"Shape mismatch: w_star={w_star.shape}, A_diag={A_diag.shape}, b={b.shape}"
 
-        quadratic_term = (
-            w_star * (A_diag * w_star)
-        ) / 2  # shape: (batch_size, nr_betas, n_agents)
-        linear_term = w_star * b  # shape: (batch_size, nr_betas, n_agents)
-        # Expand c to match the agent dimension: (batch_size, nr_betas) -> (batch_size, nr_betas, 1)
-        q_values = (
-            c.unsqueeze(2) - quadratic_term - linear_term
-        )  # shape: (batch_size, nr_betas, n_agents)
+        quadratic_term = (w_star * (A_diag * w_star)) / 2
+        linear_term = w_star * b
+        q_values = c.unsqueeze(2) - quadratic_term - linear_term  # (B, J, N)
+
+        q_values = q_values.sum(dim=2)  # 👈 sum over agents → (B, J)
         return q_values
 
     @staticmethod
@@ -135,13 +131,13 @@ class OpinionNet(nn.Module):
         noisy_w = w + noise
 
         # Not normalizing for now
-        # noisy_w = noisy_w / (noisy_w.sum(dim=-1, keepdim=True) + 1e-8)
+        noisy_w = noisy_w / (noisy_w.sum(dim=-1, keepdim=True) + 1e-8)
 
         noisy_w = torch.clamp(noisy_w, min=0.0)
         return noisy_w
 
     @staticmethod
-    def compute_action_from_w(w: torch.Tensor, beta: torch.Tensor, max_u: float):
+    def compute_action_from_w(w: torch.Tensor, beta: torch.Tensor):
         """
         Compute the action u from allocation weights w and beta values.
 
@@ -153,10 +149,7 @@ class OpinionNet(nn.Module):
         Returns:
             torch.Tensor: Actions u, shape (batch_size, num_agents), capped at max_u per agent
         """
-        # Scale per-node: each u_i ≤ max_u
-        u = w * beta * max_u
-
-        # Optionally clip to make sure we’re safe
-        u = torch.clamp(u, 0.0, max_u)
+        # w is already normalized
+        u = w * beta 
 
         return u
