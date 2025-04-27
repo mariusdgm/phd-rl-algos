@@ -49,10 +49,6 @@ def run(opts: Dict) -> True:
 
         logger.info(f"Starting experiment: {config['full_title']}")
 
-        ### Setup environments ###
-        train_env = build_environment()
-        validation_env = build_environment()
-
         ### Setup output and loading paths ###
 
         path_previous_experiments_outputs = None
@@ -64,8 +60,6 @@ def run(opts: Dict) -> True:
             )
 
         experiment_agent = AgentDQN(
-            train_env=train_env,
-            validation_env=validation_env,
             experiment_output_folder=config["out_dir"],
             experiment_name=config["experiment"],
             resume_training_path=path_previous_experiments_outputs,

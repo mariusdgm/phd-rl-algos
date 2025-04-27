@@ -144,6 +144,22 @@ def generate_full_control_policy(env, nx):
 
     return policy
 
+def generate_control_from_vector(env, nx, vector):
+    N = env.num_agents
+    ubar = env.max_u
+    grids = create_state_grid(N, nx)
+    grid_shape = tuple(len(grid) for grid in grids)
+
+    # Define the full control action (maximum control for all agents)
+    full_control_action = vector
+    policy = {}
+
+    # Map every state in the grid to the full control action
+    for idx in np.ndindex(grid_shape):
+        policy[idx] = full_control_action.copy()
+
+    return policy   
+
 
 def optimal_control_action(env, total_budget):
     """

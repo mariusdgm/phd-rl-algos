@@ -28,7 +28,15 @@ def build_interpolator(V, grids):
 
 
 def value_iteration(
-    env, nx=10, gamma=1.0, beta=0.0, step_duration=3.0, max_iterations=1000, tol=1e-6
+    env, 
+    action_levels,
+    nx=10, 
+    gamma=1.0, 
+    beta=0.0, 
+    step_duration=3.0, 
+    max_iterations=1000, 
+    tol=1e-6,
+    max_total_budget=1,
 ):
     N = env.num_agents
     d = env.desired_opinion
@@ -38,8 +46,10 @@ def value_iteration(
 
     V = initialize_value_function(N, nx)
 
-    action_levels = [0, env.max_u/2, env.max_u]  # 3 levels
-    control_actions = list(product(action_levels, repeat=N))
+    control_actions = [
+        control for control in product(action_levels, repeat=N)
+        if np.array(control).sum() <= max_total_budget
+    ]
 
     for iteration in range(max_iterations):
         V_new = np.zeros_like(V)
@@ -85,14 +95,13 @@ def value_iteration(
     return V
 
 
-def extract_policy(env, V, nx=10, gamma=1.0, beta=0.0, step_duration=3.0):
+def extract_policy(env, V, action_levels, nx=10, gamma=1.0, beta=0.0, step_duration=3.0):
     N = env.num_agents
     d = env.desired_opinion
 
     grids = create_state_grid(N, nx)
     grid_shape = tuple(len(grid) for grid in grids)
 
-    action_levels = [0, env.max_u/2, env.max_u]  # 3 levels
     control_actions = list(product(action_levels, repeat=N))
     policy = {}
 

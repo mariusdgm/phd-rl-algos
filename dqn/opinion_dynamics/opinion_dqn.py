@@ -11,26 +11,26 @@ def get_dir_n_levels_up(path, n):
 proj_root = get_dir_n_levels_up(os.path.abspath(__file__), 2)
 sys.path.append(proj_root)
 
-import time
+
 import datetime
 import torch
-import random
 import numpy as np
 
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict
 
 
 import torch.optim as optim
 import torch.nn.functional as F
 
-import gym
 
 from opinion_dynamics.replay_buffer import ReplayBuffer
 from opinion_dynamics.utils.experiment import seed_everything
 from opinion_dynamics.utils.my_logging import setup_logger
-from opinion_dynamics.utils.generic import merge_dictionaries, replace_keys
+from opinion_dynamics.utils.generic import replace_keys
 from opinion_dynamics.models import OpinionNet
+from opinion_dynamics.utils.experiment import build_environment
+
 
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 device = "cpu"
@@ -39,8 +39,6 @@ device = "cpu"
 class AgentDQN:
     def __init__(
         self,
-        train_env,
-        validation_env,
         experiment_output_folder=None,
         experiment_name=None,
         resume_training_path=None,
@@ -51,10 +49,7 @@ class AgentDQN:
         """A DQN agent implementation.
 
         Args:
-            train_env (gym.env): An instantiated gym Environment
-            validation_env (gym.env): An instantiated gym Environment that was created with the same
-                                    parameters as train_env. Used to be able to do validation epochs and
-                                    return to the same training point.
+
             experiment_output_folder (str, optional): Path to the folder where the training outputs will be saved.
                                                          Defaults to None.
             experiment_name (str, optional): A string describing the experiment being run. Defaults to None.
@@ -70,9 +65,6 @@ class AgentDQN:
         """
 
         # assign environments
-        self.train_env = train_env
-        self.validation_env = validation_env
-
         self.save_checkpoints = save_checkpoints
         self.logger = logger or setup_logger("dqn")
 
@@ -284,13 +276,22 @@ class AgentDQN:
 
         self.logger.info("Initialized newtworks and optimizer.")
 
+    def _make_env(self, random_init=False):
+        env = build_environment(random_initial_opinions=random_init)
+        return env
+        
     def _read_and_init_envs(self):
         """Read dimensions of the input and output of the simulation environment"""
+        self.train_env = self._make_env(random_init=True)
+        self.validation_env = self._make_env(random_init=False)
+        
+        self.train_s, _ = self.train_env.reset() 
+        self.env_s, _ = self.validation_env.reset()
+        
         self.in_features = self.train_env.observation_space.shape[0]
         self.num_actions = self.train_env.action_space.shape[0]
 
-        self.train_s, _ = self.train_env.reset()
-        self.env_s, _ = self.validation_env.reset()
+        
 
     def load_models(self, models_load_file):
         checkpoint = torch.load(models_load_file)
@@ -348,12 +349,7 @@ class AgentDQN:
 
         self.logger.debug(f"Training status saved at t = {self.t}")
 
-    def select_action(
-        self,
-        state: torch.Tensor,
-        epsilon: float = None,
-        random_action: bool = False,
-    ):
+    def select_action(self, state: torch.Tensor, epsilon: float = None, random_action: bool = False):
         """
         Select an action by evaluating the Q-function over the β grid.
 
@@ -377,9 +373,7 @@ class AgentDQN:
             assert c.shape == (B, J), f"c shape mismatch: {c.shape}"
 
             w_star = self.policy_model.compute_w_star(A_diag, b)  # (B, J, N)
-            q_values = self.policy_model.compute_q_values(
-                w_star, A_diag, b, c
-            )  # (B, J, N)
+            q_values = self.policy_model.compute_q_values(w_star, A_diag, b, c)  # (B, J)
 
             assert w_star.shape == (B, J, N), f"w_star shape mismatch: {w_star.shape}"
             assert q_values.shape == (B, J), f"q_values shape mismatch: {q_values.shape}"
@@ -389,77 +383,53 @@ class AgentDQN:
             # === RANDOM ACTION BRANCH ===
             if random_action or (epsilon is not None and np.random.rand() < epsilon):
                 rand_idx = torch.randint(low=0, high=J, size=(B,), dtype=torch.long)
-                gather_idx = rand_idx.view(-1, 1, 1).expand(-1, 1, N)
 
-                assert rand_idx.shape == (B,), f"rand_idx shape: {rand_idx.shape}"
-                assert gather_idx.shape == (
-                    B,
-                    1,
-                    N,
-                ), f"gather_idx shape: {gather_idx.shape}"
-
-                w_rand = w_star.gather(1, gather_idx).squeeze(1)  # (B, N)
+                w_rand = w_star.gather(1, rand_idx.unsqueeze(1).unsqueeze(2).expand(-1, 1, N)).squeeze(1)  # (B, N)
                 assert w_rand.shape == (B, N), f"w_rand shape: {w_rand.shape}"
 
-                w_rand_noisy = self.policy_model.apply_action_noise(
-                    w_rand, noise_amplitude
-                )
+                w_rand_noisy = self.policy_model.apply_action_noise(w_rand, noise_amplitude)
 
                 rand_beta_values = torch.tensor(
                     [self.betas[i.item()] for i in rand_idx], dtype=torch.float32
-                ).unsqueeze(
-                    1
-                )  # (B, 1)
+                ).unsqueeze(1).expand(-1, N)  # (B, N)
 
-                u = self.policy_model.compute_action_from_w(
-                    w_rand_noisy, rand_beta_values
-                )
+                u = self.policy_model.compute_action_from_w(w_rand_noisy, rand_beta_values)
 
                 w_full = torch.zeros_like(w_star)
-                w_full.scatter_(1, gather_idx, w_rand_noisy.unsqueeze(1))  # (B, J, N)
+                w_full.scatter_(1, rand_idx.view(-1, 1, 1).expand(-1, 1, N), w_rand_noisy.unsqueeze(1))
 
-                q_rand = q_values.gather(1, gather_idx).squeeze(1)  # (B, N)
-                q_rand_mean = q_rand.mean(dim=1)
+                q_rand = q_values.gather(1, rand_idx.unsqueeze(1)).squeeze(1)  # (B,)
+                q_rand_mean = q_rand.mean(dim=0)  # scalar
 
                 return (
-                    u.cpu().numpy(),  # (B, N)
-                    rand_idx.cpu().numpy().astype(np.int64),  # (B,)
-                    w_full.cpu().numpy(),  # (B, J, N)
-                    q_rand_mean.cpu().item(),  # scalar
+                    u.cpu().numpy(),
+                    rand_idx.cpu().numpy().astype(np.int64),
+                    w_full.cpu().numpy(),
+                    q_rand_mean.item(),
                 )
 
             # === GREEDY ACTION BRANCH ===
-            q_values_mean = q_values.mean(dim=2)  # (B, J)
+            q_values_mean = q_values  # Already (B, J), no need to average across agents
             max_q, beta_idx = q_values_mean.max(dim=1)  # (B,)
             beta_idx_exp = beta_idx.unsqueeze(1).unsqueeze(2).expand(-1, 1, N)
 
             assert beta_idx.shape == (B,), f"beta_idx shape: {beta_idx.shape}"
-            assert beta_idx_exp.shape == (
-                B,
-                1,
-                N,
-            ), f"beta_idx_exp shape: {beta_idx_exp.shape}"
+            assert beta_idx_exp.shape == (B, 1, N), f"beta_idx_exp shape: {beta_idx_exp.shape}"
 
             optimal_w = w_star.gather(1, beta_idx_exp).squeeze(1)  # (B, N)
-            assert optimal_w.shape == (B, N), f"optimal_w shape: {optimal_w.shape}"
 
-            optimal_w_noisy = self.policy_model.apply_action_noise(
-                optimal_w, noise_amplitude
-            )
+            optimal_w_noisy = self.policy_model.apply_action_noise(optimal_w, noise_amplitude)
 
             beta_values = torch.tensor(
                 [self.betas[int(i)] for i in beta_idx], dtype=torch.float32
-            ).unsqueeze(
-                1
-            )  # (B, 1)
+            ).unsqueeze(1).expand(-1, N)  # (B, N)
 
             u = self.policy_model.compute_action_from_w(optimal_w_noisy, beta_values)
 
             w_full = torch.zeros_like(w_star)
-            w_full.scatter_(1, beta_idx_exp, optimal_w_noisy.unsqueeze(1))  # (B, J, N)
+            w_full.scatter_(1, beta_idx_exp, optimal_w_noisy.unsqueeze(1))
 
             assert u.shape == (B, N), f"u shape: {u.shape}"
-            assert max_q.dim() == 1, f"max_q should be 1D, got {max_q.shape}"
 
             return (
                 u.cpu().numpy(),
@@ -671,7 +641,7 @@ class AgentDQN:
         self.losses = []
         self.max_qs = []
 
-        self.train_s, _ = self.train_env.reset()
+        self.train_s, _ = self._make_env(random_init=True).reset()
 
     def display_training_epoch_info(self, stats):
         self.logger.info(
