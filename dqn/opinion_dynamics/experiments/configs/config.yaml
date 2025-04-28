@@ -1,3 +1,3 @@
 agent_params:
   args_:
-    action_w_noise_amplitude: [0, 0.1, 0.3, 0.6, 0.9]
+    action_w_noise_amplitude: [0, 0.1, 0.3]

@@ -226,11 +226,11 @@ def build_environment(random_initial_opinions=False):
         budget=1000.0,
         desired_opinion=1,
         tau=0.1,
-        max_steps=100,
+        max_steps=50,
         opinion_end_tolerance=0.05,
         control_beta=0.4,
         normalize_reward=False,
-        terminal_reward=0.4
+        terminal_reward=0.5
     )
 
     env.reset()

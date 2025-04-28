@@ -16,9 +16,6 @@ def initialize_value_function(N, nx):
 def is_terminal(next_state, env):
     return np.abs(np.mean(next_state) - env.desired_opinion) <= env.opinion_end_tolerance
 
-def reward_function(x, u, d, beta):
-    return -np.abs(d - x).sum() - beta * np.sum(u)
-
 
 def build_interpolator(V, grids):
     """
@@ -32,7 +29,6 @@ def value_iteration(
     action_levels,
     nx=10, 
     gamma=1.0, 
-    beta=0.0, 
     step_duration=3.0, 
     max_iterations=1000, 
     tol=1e-6,
@@ -75,8 +71,8 @@ def value_iteration(
                 else:
                     future_value = interpolator(next_state.reshape(1, -1))[0]
 
-                immediate_reward = reward_function(
-                    current_state, control_input, d, beta
+                immediate_reward = env.reward_function(
+                    current_state, control_input, d, env.control_beta
                 )
 
                 total_value = immediate_reward + gamma * future_value
@@ -95,14 +91,17 @@ def value_iteration(
     return V
 
 
-def extract_policy(env, V, action_levels, nx=10, gamma=1.0, beta=0.0, step_duration=3.0):
+def extract_policy(env, V, action_levels, nx=10, gamma=1.0, step_duration=3.0, max_total_budget=1):
     N = env.num_agents
     d = env.desired_opinion
 
     grids = create_state_grid(N, nx)
     grid_shape = tuple(len(grid) for grid in grids)
 
-    control_actions = list(product(action_levels, repeat=N))
+    control_actions = [
+        control for control in product(action_levels, repeat=N)
+        if np.array(control).sum() <= max_total_budget
+    ]
     policy = {}
 
     interpolator = build_interpolator(V, grids)
@@ -126,7 +125,9 @@ def extract_policy(env, V, action_levels, nx=10, gamma=1.0, beta=0.0, step_durat
             else: 
                 future_value = interpolator(next_state.reshape(1, -1))[0]
 
-            immediate_reward = reward_function(current_state, control_input, d, beta)
+            immediate_reward = env.reward_function(
+                    current_state, control_input, d, env.control_beta
+                )
             total_value = immediate_reward + gamma * future_value
 
             if total_value > best_value:
