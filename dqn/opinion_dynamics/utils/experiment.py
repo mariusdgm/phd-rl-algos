@@ -229,7 +229,7 @@ def build_environment(random_initial_opinions=False):
         max_steps=50,
         opinion_end_tolerance=0.05,
         control_beta=0.4,
-        normalize_reward=False,
+        normalize_reward=True,
         terminal_reward=0.5
     )
 

@@ -1,6 +1,6 @@
 experiment: "opinion_agent_dqn"
 
-epochs_to_train: 20
+epochs_to_train: 10
 environment: [opinion_net]
 
 agent_params:
@@ -20,12 +20,12 @@ agent_params:
     action_w_noise_amplitude: 0.3
 
     gamma: 0.9
-    betas: [0, 0.3, 0.6]
+    betas: [0.6]
 
     epsilon:
       start: 1.0
       end: 0.01
-      decay: 300_000_0
+      decay: 150_000_0
 
 estimator:
   model: OpinionNet

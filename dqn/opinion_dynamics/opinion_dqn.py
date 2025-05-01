@@ -274,7 +274,7 @@ class AgentDQN:
             self.policy_model.parameters(), **optimizer_settings["args"]
         )
 
-        self.logger.info("Initialized newtworks and optimizer.")
+        self.logger.info("Initialized networks and optimizer.")
 
     def _make_env(self, random_init=False):
         env = build_environment(random_initial_opinions=random_init)
@@ -693,6 +693,7 @@ class AgentDQN:
         stats = {}
 
         stats["frame_stamp"] = self.t
+        stats["greedy_epsilon"] = self.epsilon_by_frame(self.t)
 
         stats["episode_rewards"] = self.get_vector_stats(episode_rewards)
         stats["episode_discounted_rewards"] = self.get_vector_stats(
