@@ -88,20 +88,19 @@ def process_experiment(root_dir):
                         data["seed"] = seed_name
                         data["experiment_name"] = name
                         data["sub_experiment_path"] = seed_path
-                    rows.extend(row_data)  
+                    rows.extend(row_data)
 
     # Create a DataFrame from the rows
     df = pd.DataFrame(rows)
     return df
 
+
 def process_subexperiment(seed_folder_path, experiment_name):
     cfg_data = read_config(os.path.join(seed_folder_path, "cfg.yaml"), experiment_name)
-    cfg_data["sub_experiment_path"] = seed_folder_path 
+    cfg_data["sub_experiment_path"] = seed_folder_path
     train_stats_file = find_train_stats_file(seed_folder_path)
     if train_stats_file:
-        experiment_results = process_training_stats(
-            train_stats_file, cfg_data
-        )
+        experiment_results = process_training_stats(train_stats_file, cfg_data)
         return experiment_results
     else:
         return []  # Return an empty list if no train stats file is found
@@ -181,6 +180,7 @@ def flatten(d, parent_key="", sep="_"):
             items.append((new_key, v))
     return dict(items)
 
+
 def create_adjacency_matrix_from_links(num_nodes, links):
     adjacency_matrix = np.zeros((num_nodes, num_nodes), dtype=int)
     for link in links:
@@ -192,47 +192,78 @@ def create_adjacency_matrix_from_links(num_nodes, links):
 
 
 ### Env building code
-def build_environment(random_initial_opinions=False):
-    links = [
-        (1, 3),
-        (3, 2),
-        (2, 3),
-        (2, 0),
-        (0, 2),
-        (1, 2),
-        (0, 1),
-        # (3, 4),
-        # (4, 3)
-    ]
 
-    num_nodes = 4
-    connectivity_matrix = create_adjacency_matrix_from_links(num_nodes, links)
-    # connectivity_matrix = normalize_adjacency_matrix(connectivity_matrix)
+# Small env, premade links
+# def build_environment(random_initial_opinions=False):
+#     links = [
+#         (1, 3),
+#         (3, 2),
+#         (2, 3),
+#         (2, 0),
+#         (0, 2),
+#         (1, 2),
+#         (0, 1),
+#         # (3, 4),
+#         # (4, 3)
+#     ]
+
+#     num_agents = 4
+#     connectivity_matrix = create_adjacency_matrix_from_links(num_nodes, links)
+#     # connectivity_matrix = normalize_adjacency_matrix(connectivity_matrix)
+
+#     if random_initial_opinions:
+#         initial_opinions = np.random.uniform(low=0.0, high=1.0, size=num_nodes)
+
+#     else:
+#         initial_opinions = np.linspace(0.3, 0, num_agents)
+
+#     # initial_opinions = np.linspace(0, 1, num_agents)
+
+#     # initial_opinions = (np.mod(np.arange(0, 0.1 * num_agents, 0.1), 0.9)) + 0.1
+
+#     env = NetworkGraph(
+#         connectivity_matrix=connectivity_matrix,
+#         initial_opinions=initial_opinions,
+#         max_u=0.4,
+#         budget=1000.0,
+#         desired_opinion=1,
+#         tau=0.1,
+#         max_steps=50,
+#         opinion_end_tolerance=0.05,
+#         control_beta=0.4,
+#         normalize_reward=True,
+#         terminal_reward=0.5
+#     )
+
+#     env.reset()
+
+#     return env
+
+
+def build_environment(random_initial_opinions=False):
+
+    num_agents = 20
 
     if random_initial_opinions:
         initial_opinions = np.random.uniform(low=0.0, high=1.0, size=num_nodes)
-    
+
     else:
-        initial_opinions = np.linspace(0.3, 0, num_nodes)
-    
-    # initial_opinions = np.linspace(0, 1, num_nodes)
-    
-    # initial_opinions = (np.mod(np.arange(0, 0.1 * num_nodes, 0.1), 0.9)) + 0.1
+        initial_opinions = np.linspace(0.3, 0, num_agents)
 
     env = NetworkGraph(
-        connectivity_matrix=connectivity_matrix,
+        num_agents=num_agents,
         initial_opinions=initial_opinions,
         max_u=0.4,
         budget=1000.0,
         desired_opinion=1,
         tau=0.1,
-        max_steps=50,
+        max_steps=150,
         opinion_end_tolerance=0.05,
         control_beta=0.4,
         normalize_reward=True,
-        terminal_reward=0.5
+        terminal_reward=0.5,
+        seed=42,
     )
 
     env.reset()
-
     return env
