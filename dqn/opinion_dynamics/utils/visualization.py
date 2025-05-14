@@ -18,23 +18,23 @@ def interpolate_opinion_trajectory(env, opinions_over_time, actions, n_substeps=
     interpolated = []
     times = []
 
+    # --- Append initial unmodified state at time 0 ---
+    interpolated.append(opinions_over_time[0].copy())
+    times.append(0.0)
+
     for t in range(len(actions)):
         x_start = opinions_over_time[t]
         u = actions[t]
 
-        # Apply impulse control: this is effectively part of the dynamics in compute_dynamics
+        # Apply impulse control (treated as instantaneous at t * tau)
         x = env.compute_dynamics(current_state=x_start, control_action=u, step_duration=0.0)
+        interpolated.append(x.copy())
+        times.append(t * env.tau)
 
-        for k in range(n_substeps):
-            time = t * env.tau + k * dt
-            interpolated.append(x.copy())
-            times.append(time)
-
-            # Apply small dynamics update via env
+        # Propagate over substeps
+        for k in range(1, n_substeps + 1):
             x = env.compute_dynamics(current_state=x, control_action=np.zeros_like(u), step_duration=dt)
-
-    # Append final state
-    interpolated.append(opinions_over_time[-1])
-    times.append((len(actions)) * env.tau)
+            interpolated.append(x.copy())
+            times.append(t * env.tau + k * dt)
 
     return np.array(interpolated), np.array(times)

@@ -1,1 +1,14 @@
 experiment_run_name: ["best_params"]
+
+agent_params:
+  args_:
+    action_w_noise_amplitude: [0.3, 0.8]
+
+estimator:
+  args_:
+    lin_hidden_out_size: [32]
+
+optim:
+  args_:
+    lr: [0.000001]
+   

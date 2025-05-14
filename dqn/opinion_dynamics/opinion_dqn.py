@@ -30,11 +30,57 @@ from opinion_dynamics.utils.my_logging import setup_logger
 from opinion_dynamics.utils.generic import replace_keys
 from opinion_dynamics.models import OpinionNet
 from opinion_dynamics.utils.experiment import build_environment
+from dqn.opinion_dynamics.experiments.algos import centrality_based_continuous_control
 
 
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 device = "cpu"
 
+def initialize_network_to_match_policy(opinion_net, env, available_budget, beta_idx=0):
+    """
+    One-shot initialization: modify the final linear layer weights
+    so that w* computed by the network matches the centrality-based policy.
+    Only for beta_idx=0.
+    """
+    opinion_net.eval()
+
+    # Get the state and the desired action (weights)
+    state, _ = env.reset(randomize_opinions=False)
+    action, _ = centrality_based_continuous_control(env, available_budget)
+    w_target = action / available_budget  # Normalize
+
+    # Forward pass up to the feature layer
+    with torch.no_grad():
+        state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)  # (1, N)
+        features = opinion_net.fc(state_tensor).squeeze(0)  # shape: (hidden_size,)
+
+        # Fix A_diag = 1.0 → b = -w_target
+        A_diag_val = torch.ones(env.num_agents)
+        b_val = -w_target
+
+        # Build the output vector for predict_A_b_c: [c, A_diag, b]
+        block = torch.cat([
+            torch.tensor([0.0]),        # c
+            A_diag_val,                # A_diag
+            b_val                      # b
+        ])  # shape: (2N + 1,)
+
+        # Inject this block into the layer's weight projection manually
+        out_proj = opinion_net.predict_A_b_c
+        with torch.no_grad():
+            # Zero the weights (simplifies control)
+            out_proj.weight.zero_()
+            out_proj.bias.zero_()
+
+            # Map this fixed feature to our desired block for beta_idx = 0
+            block_size = 2 * env.num_agents + 1
+            start = beta_idx * block_size
+            end = start + block_size
+
+            out_proj.bias[start:end] = block
+
+    print("OpinionNet initialized to match centrality-based policy for current state.")
+    return opinion_net
 
 class AgentDQN:
     def __init__(
@@ -265,6 +311,9 @@ class AgentDQN:
                 nr_betas=len(self.betas),
                 **estimator_settings["args"],
             )
+            initialize_network_to_match_policy(self.policy_model, self.train_env, available_budget=2.0)
+            initialize_network_to_match_policy(self.target_model, self.validation_env, available_budget=2.0)
+            
         else:
             estimator_name = estimator_settings["model"]
             raise ValueError(f"Could not setup estimator. Tried with: {estimator_name}")
