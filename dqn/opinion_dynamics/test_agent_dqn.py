@@ -52,7 +52,7 @@ def agent_config():
         "estimator": {
             "model": "OpinionNet",
             "args": {
-                "lin_hidden_out_size": 16
+                "lin_hidden_size": 16
             }
         },
         "optim": {

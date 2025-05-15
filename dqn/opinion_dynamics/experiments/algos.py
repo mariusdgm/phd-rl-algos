@@ -1,5 +1,17 @@
 import numpy as np
 
+# import os, sys
+
+# def get_dir_n_levels_up(path, n):
+#     # Go up n levels from the given path
+#     for _ in range(n):
+#         path = os.path.dirname(path)
+#     return path
+
+# proj_root = get_dir_n_levels_up(os.path.abspath(__file__), 2)
+# sys.path.append(proj_root)
+
+
 def centrality_based_continuous_control(env, available_budget):
     """
     Compute a control action distributing a continuous budget based on centrality * deviation heuristic.

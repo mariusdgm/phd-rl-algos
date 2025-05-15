@@ -6,24 +6,24 @@ import torch.nn.functional as F
 
 
 class OpinionNet(nn.Module):
-    def __init__(self, nr_agents, nr_betas=2, lin_hidden_out_size=64):
+    def __init__(self, nr_agents, nr_betas=2, lin_hidden_size=64):
         super(OpinionNet, self).__init__()
 
         self.nr_agents = nr_agents
         self.nr_betas = nr_betas  # Number of \(\beta\) grid points
-        self.lin_hidden_out_size = lin_hidden_out_size
+        self.lin_hidden_size = lin_hidden_size
 
         # Fully connected layers for state features
         self.fc = nn.Sequential(
-            nn.Linear(self.nr_agents, self.lin_hidden_out_size),
+            nn.Linear(self.nr_agents, self.lin_hidden_size),
             nn.ReLU(),
-            nn.Linear(self.lin_hidden_out_size, self.lin_hidden_out_size),
+            nn.Linear(self.lin_hidden_size, self.lin_hidden_size),
             nn.ReLU(),
         )
 
         # Predict \( q(x, \beta; \theta), A, b \) for all \(\beta\) grid points
         self.predict_A_b_c = nn.Linear(
-            self.lin_hidden_out_size, self.nr_betas * (2 * self.nr_agents + 1)
+            self.lin_hidden_size, self.nr_betas * (2 * self.nr_agents + 1)
         )
 
         with torch.no_grad():
@@ -52,7 +52,7 @@ class OpinionNet(nn.Module):
         A_b_c_net = self.predict_A_b_c(features)
         A_b_c_net = A_b_c_net.view(-1, self.nr_betas, 2 * self.nr_agents + 1)
 
-        A_diag = F.softplus(A_b_c_net[:, :, 1 : self.nr_agents + 1]) + 1e-6  # (B, J, N)
+        A_diag = torch.square(A_b_c_net[:, :, 1 : self.nr_agents + 1]) + 1e-6  # (B, J, N)
         b = A_b_c_net[:, :, self.nr_agents + 1 :]  # (B, J, N)
         c = A_b_c_net[:, :, 0]  # (B, J)
 
@@ -78,15 +78,7 @@ class OpinionNet(nn.Module):
             torch.Tensor: Optimal weight allocation \( w^* \), shape (batch_size, nr_betas, nr_agents).
         """
         A_inv = 1.0 / A_diag  # Inverse of diagonal A
-        w_star = -A_inv * b  # Compute raw w*
-
-        # Normalize weights to sum to 1 across agents 
-        w_star = w_star / (
-            w_star.sum(dim=2, keepdim=True) + 1e-8
-        )
-
-        # Ensure weights are non-negative
-        w_star = torch.clamp(w_star, min=0)
+        w_star = A_inv * b  # Compute raw w*
 
         return w_star
 
@@ -110,9 +102,10 @@ class OpinionNet(nn.Module):
 
         quadratic_term = (w_star * (A_diag * w_star)) / 2
         linear_term = w_star * b
-        q_values = c.unsqueeze(2) - quadratic_term - linear_term  # (B, J, N)
+        q_values = c.unsqueeze(2) - quadratic_term + linear_term  # (B, J, N)
 
-        q_values = q_values.sum(dim=2)  # 👈 sum over agents → (B, J)
+        q_values = q_values.sum(dim=2)
+        
         return q_values
 
     @staticmethod
@@ -130,10 +123,6 @@ class OpinionNet(nn.Module):
         noise = torch.randn_like(w) * noise_amplitude
         noisy_w = w + noise
 
-        # Not normalizing for now
-        noisy_w = noisy_w / (noisy_w.sum(dim=-1, keepdim=True) + 1e-8)
-
-        noisy_w = torch.clamp(noisy_w, min=0.0)
         return noisy_w
 
     @staticmethod
@@ -149,7 +138,7 @@ class OpinionNet(nn.Module):
         Returns:
             torch.Tensor: Actions u, shape (batch_size, num_agents), capped at max_u per agent
         """
-        # w is already normalized
+        # Softmax also normalizes
+        w = F.softmax(w, dim=-1)
         u = w * beta 
-
         return u

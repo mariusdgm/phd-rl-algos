@@ -30,7 +30,7 @@ from opinion_dynamics.utils.my_logging import setup_logger
 from opinion_dynamics.utils.generic import replace_keys
 from opinion_dynamics.models import OpinionNet
 from opinion_dynamics.utils.experiment import build_environment
-from dqn.opinion_dynamics.experiments.algos import centrality_based_continuous_control
+from opinion_dynamics.experiments.algos import centrality_based_continuous_control
 
 
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -56,7 +56,9 @@ def initialize_network_to_match_policy(opinion_net, env, available_budget, beta_
 
         # Fix A_diag = 1.0 → b = -w_target
         A_diag_val = torch.ones(env.num_agents)
-        b_val = -w_target
+        
+        # TODO: need to also invert the softmax + normalize
+        b_val = -torch.tensor(w_target, dtype=torch.float32)
 
         # Build the output vector for predict_A_b_c: [c, A_diag, b]
         block = torch.cat([
@@ -311,8 +313,8 @@ class AgentDQN:
                 nr_betas=len(self.betas),
                 **estimator_settings["args"],
             )
-            initialize_network_to_match_policy(self.policy_model, self.train_env, available_budget=2.0)
-            initialize_network_to_match_policy(self.target_model, self.validation_env, available_budget=2.0)
+            # initialize_network_to_match_policy(self.policy_model, self.train_env, available_budget=2.0)
+            # initialize_network_to_match_policy(self.target_model, self.validation_env, available_budget=2.0)
             
         else:
             estimator_name = estimator_settings["model"]
@@ -458,8 +460,7 @@ class AgentDQN:
                 )
 
             # === GREEDY ACTION BRANCH ===
-            q_values_mean = q_values  # Already (B, J), no need to average across agents
-            max_q, beta_idx = q_values_mean.max(dim=1)  # (B,)
+            max_q, beta_idx = q_values.max(dim=1)  # (B,)
             beta_idx_exp = beta_idx.unsqueeze(1).unsqueeze(2).expand(-1, 1, N)
 
             assert beta_idx.shape == (B,), f"beta_idx shape: {beta_idx.shape}"

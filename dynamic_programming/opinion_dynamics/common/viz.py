@@ -1,7 +1,48 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
+def plot_action_heatmap(actions, step_labels=None):
+    """
+    Plot a heatmap of actions over time, with agents on the Y-axis.
 
+    Args:
+        actions (List[np.ndarray] or np.ndarray): Actions over time, shape (T, N).
+        step_labels (List[str] or None): Optional labels for the time steps (X-axis).
+    """
+    actions = np.array(actions)  # Ensure it's a NumPy array
+    T, N = actions.shape
+
+    # Transpose to plot agents on Y-axis
+    data = actions.T  # Now shape is (N, T)
+
+    x_edges = np.arange(T + 1)
+    y_edges = np.arange(N + 1)
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    mesh = ax.pcolormesh(x_edges, y_edges, data, cmap="viridis", shading="auto")
+
+    cbar = plt.colorbar(mesh, ax=ax)
+    cbar.set_label("Control Magnitude")
+
+    # Time steps (X-axis)
+    if step_labels is None:
+        step_labels = [str(i) for i in range(T)]
+    ax.set_xticks(np.arange(T) + 0.5)
+    ax.set_xticklabels(step_labels, rotation=0)
+    ax.set_xlabel("Time Step")
+
+    # Agent labels (Y-axis)
+    agent_labels = [f"N{i}" for i in range(N)]
+    ax.set_yticks(np.arange(N) + 0.5)
+    ax.set_yticklabels(agent_labels)
+    ax.set_ylabel("Agents")
+
+    ax.set_title("Control Actions Heatmap (Agents on Y-axis)")
+    ax.grid(visible=True, axis='y', color='white', linestyle='--', linewidth=0.5)
+
+    plt.tight_layout()
+    plt.show()
+    
 def plot_campaign_budgets(optimal_budget_allocation, nodes_controlled, control_inputs):
     """
     Plot the budget allocation across campaigns and display the nodes controlled in each campaign.
