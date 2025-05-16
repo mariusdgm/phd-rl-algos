@@ -487,6 +487,72 @@ class AgentDQN:
                 w_full.cpu().numpy(),
                 max_q.mean().item(),
             )
+            
+    def model_learn(self, sample, debug=True):
+        """Compute the loss with TD learning."""
+        states, (beta_indices, ws), rewards, next_states, dones = sample
+
+        states = torch.tensor(np.stack(states), dtype=torch.float32)
+        next_states = torch.tensor(np.stack(next_states), dtype=torch.float32)
+
+        # beta_indices shape: (B,)
+        beta_indices = torch.tensor(beta_indices, dtype=torch.long).view(-1)
+        ws = torch.tensor(np.stack(ws), dtype=torch.float32)  # (B, J, N)
+
+        rewards = torch.tensor(np.array(rewards), dtype=torch.float32).unsqueeze(1)
+        dones = torch.tensor(np.array(dones), dtype=torch.float32).unsqueeze(1)
+
+        self.logger.debug(
+            f"States shape: {states.shape}, Next States shape: {next_states.shape}"
+        )
+        self.logger.debug(
+            f"Beta indices shape: {beta_indices.shape}, W shape: {ws.shape}"
+        )
+        self.logger.debug(f"Rewards shape: {rewards.shape}, Dones shape: {dones.shape}")
+
+        self.policy_model.train()
+        abc_model = self.policy_model(states)
+        # shapes: A_diag: (B, J, N), b: (B, J, N), c: (B, J)
+        A_diag = abc_model["A_diag"]
+        b = abc_model["b"]
+        c = abc_model["c"]
+        self.logger.debug(
+            f"A_diag shape: {A_diag.shape}, b shape: {b.shape}, c shape: {c.shape}"
+        )
+
+        assert ws.shape == A_diag.shape, f"ws: {ws.shape}, A_diag: {A_diag.shape}"
+
+        q_values = self.policy_model.compute_q_values(ws, A_diag, b, c)  # (B, J)
+
+        # Gather Q-values at the chosen beta index for each sample
+
+        selected_q_value = torch.gather(
+            q_values, dim=1, index=beta_indices.unsqueeze(1)
+        )  # (B, 1)
+
+        # Next state values
+        abc_model_target = self.target_model(next_states)
+        A_diag_target = abc_model_target["A_diag"]
+        b_target = abc_model_target["b"]
+        c_target = abc_model_target["c"]
+        w_star_next = self.target_model.compute_w_star(A_diag_target, b_target)
+        next_q_values = self.target_model.compute_q_values(
+            w_star_next, A_diag_target, b_target, c_target
+        )  # (B, J)
+        max_next_q, _ = next_q_values.max(dim=1, keepdim=True)  # shape: (B, 1)
+
+        expected_q_value = rewards + self.gamma * max_next_q * (1 - dones)
+
+        assert (
+            selected_q_value.shape == expected_q_value.shape == (states.shape[0], 1)
+        ), f"Shape mismatch: selected_q={selected_q_value.shape}, expected_q={expected_q_value.shape}"
+
+        loss = F.mse_loss(selected_q_value, expected_q_value)
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+        return loss.item()
 
     def train(self, train_epochs: int) -> True:
         """The main call for the training loop of the DQN Agent.
@@ -917,71 +983,7 @@ class AgentDQN:
             + str(stats["epoch_time"])
         )
 
-    def model_learn(self, sample, debug=True):
-        """Compute the loss with TD learning."""
-        states, (beta_indices, ws), rewards, next_states, dones = sample
-
-        states = torch.tensor(np.stack(states), dtype=torch.float32)
-        next_states = torch.tensor(np.stack(next_states), dtype=torch.float32)
-
-        # beta_indices shape: (B,)
-        beta_indices = torch.tensor(beta_indices, dtype=torch.long).view(-1)
-        ws = torch.tensor(np.stack(ws), dtype=torch.float32)  # (B, J, N)
-
-        rewards = torch.tensor(np.array(rewards), dtype=torch.float32).unsqueeze(1)
-        dones = torch.tensor(np.array(dones), dtype=torch.float32).unsqueeze(1)
-
-        self.logger.debug(
-            f"States shape: {states.shape}, Next States shape: {next_states.shape}"
-        )
-        self.logger.debug(
-            f"Beta indices shape: {beta_indices.shape}, W shape: {ws.shape}"
-        )
-        self.logger.debug(f"Rewards shape: {rewards.shape}, Dones shape: {dones.shape}")
-
-        self.policy_model.train()
-        abc_model = self.policy_model(states)
-        # shapes: A_diag: (B, J, N), b: (B, J, N), c: (B, J)
-        A_diag = abc_model["A_diag"]
-        b = abc_model["b"]
-        c = abc_model["c"]
-        self.logger.debug(
-            f"A_diag shape: {A_diag.shape}, b shape: {b.shape}, c shape: {c.shape}"
-        )
-
-        assert ws.shape == A_diag.shape, f"ws: {ws.shape}, A_diag: {A_diag.shape}"
-
-        q_values = self.policy_model.compute_q_values(ws, A_diag, b, c)  # (B, J)
-
-        # Gather Q-values at the chosen beta index for each sample
-
-        selected_q_value = torch.gather(
-            q_values, dim=1, index=beta_indices.unsqueeze(1)
-        )  # (B, 1)
-
-        # Next state values
-        abc_model_target = self.target_model(next_states)
-        A_diag_target = abc_model_target["A_diag"]
-        b_target = abc_model_target["b"]
-        c_target = abc_model_target["c"]
-        w_star_next = self.target_model.compute_w_star(A_diag_target, b_target)
-        next_q_values = self.target_model.compute_q_values(
-            w_star_next, A_diag_target, b_target, c_target
-        )  # (B, J)
-        max_next_q, _ = next_q_values.max(dim=1, keepdim=True)  # shape: (B, 1)
-
-        expected_q_value = rewards + self.gamma * max_next_q * (1 - dones)
-
-        assert (
-            selected_q_value.shape == expected_q_value.shape == (states.shape[0], 1)
-        ), f"Shape mismatch: selected_q={selected_q_value.shape}, expected_q={expected_q_value.shape}"
-
-        loss = F.mse_loss(selected_q_value, expected_q_value)
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-
-        return loss.item()
+    
 
 
 def main():
