@@ -1,5 +1,3 @@
-experiment_run_name: ["best_params"]
-
 agent_params:
   args_:
     action_w_noise_amplitude: [0.3, 0.8]

@@ -52,7 +52,7 @@ class OpinionNet(nn.Module):
         A_b_c_net = self.predict_A_b_c(features)
         A_b_c_net = A_b_c_net.view(-1, self.nr_betas, 2 * self.nr_agents + 1)
 
-        A_diag = torch.square(A_b_c_net[:, :, 1 : self.nr_agents + 1]) + 1e-6  # (B, J, N)
+        A_diag = F.softplus(A_b_c_net[:, :, 1 : self.nr_agents + 1]) + 1e-6  # (B, J, N)
         b = A_b_c_net[:, :, self.nr_agents + 1 :]  # (B, J, N)
         c = A_b_c_net[:, :, 0]  # (B, J)
 
