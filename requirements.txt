@@ -4,6 +4,9 @@ anyascii==0.3.2
 asttokens @ file:///home/conda/feedstock_root/build_artifacts/asttokens_1698341106958/work
 attrs==23.2.0
 Babel==2.14.0
+backcall==0.2.0
+beautifulsoup4==4.13.4
+bleach==6.2.0
 Brotli==1.1.0
 certifi==2024.2.2
 cffi==1.16.0
@@ -22,6 +25,7 @@ debugpy @ file:///C:/b/abs_c0y1fjipt2/croot/debugpy_1690906864587/work
 decorator @ file:///home/conda/feedstock_root/build_artifacts/decorator_1641555617451/work
 defusedxml==0.7.1
 dm-haiku==0.0.12
+docopt==0.6.2
 docutils==0.18.1
 etils==1.8.0
 exceptiongroup @ file:///home/conda/feedstock_root/build_artifacts/exceptiongroup_1700579780973/work
@@ -52,7 +56,7 @@ importlib-metadata @ file:///home/conda/feedstock_root/build_artifacts/importlib
 importlib_resources==6.4.0
 iniconfig==2.0.0
 ipykernel @ file:///D:/bld/ipykernel_1698244157926/work
-ipython @ file:///D:/bld/ipython_1700832905793/work
+ipython==8.12.3
 jax==0.4.25
 jax-tqdm==0.1.2
 jaxlib==0.4.25
@@ -64,6 +68,7 @@ jsonschema==4.21.1
 jsonschema-specifications==2023.12.1
 jupyter_client @ file:///home/conda/feedstock_root/build_artifacts/jupyter_client_1699283905679/work
 jupyter_core==5.7.2
+jupyterlab_pygments==0.3.0
 kiwisolver==1.4.5
 langdetect==1.0.9
 liftoff @ git+https://github.com/mariusdgm/liftoff.git@1f0f3a2f4c90b9d0a21658bc53d128aa00e65820
@@ -73,12 +78,15 @@ MarkupSafe==2.1.5
 matplotlib==3.8.2
 matplotlib-inline @ file:///home/conda/feedstock_root/build_artifacts/matplotlib-inline_1660814786464/work
 mdurl==0.1.2
+mistune==3.1.3
 ml-dtypes==0.4.0
 mplcursors==0.6
 mpmath==1.3.0
 msgpack==1.0.8
 mujoco==3.2.0
 mujoco-py==2.1.2.14
+nbclient==0.10.2
+nbconvert==7.16.6
 nbformat==5.10.3
 nest-asyncio==1.6.0
 networkx==3.3
@@ -92,9 +100,11 @@ optax==0.2.2
 orbax-checkpoint==0.5.7
 packaging==23.2
 pandas==2.2.0
+pandocfilters==1.5.1
 parso @ file:///home/conda/feedstock_root/build_artifacts/parso_1638334955874/work
 pickleshare @ file:///home/conda/feedstock_root/build_artifacts/pickleshare_1602536217715/work
 pillow==10.2.0
+pipreqs==0.5.0
 platformdirs==4.2.0
 plotly==5.20.0
 pluggy==1.4.0
@@ -137,6 +147,7 @@ six==1.16.0
 slicer==0.0.8
 smmap==5.0.1
 snowballstemmer==2.2.0
+soupsieve==2.7
 Sphinx==7.2.6
 sphinx-rtd-theme==1.3.0
 sphinxcontrib-applehelp==1.0.8
@@ -171,5 +182,6 @@ wcwidth @ file:///home/conda/feedstock_root/build_artifacts/wcwidth_170060791658
 weasyprint==63.1
 webencodings==0.5.1
 xgboost==2.1.4
+yarg==0.1.9
 zipp==3.18.1
 zopfli==0.2.3.post1
