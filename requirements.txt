@@ -67,6 +67,7 @@ jupyter_core==5.7.2
 kiwisolver==1.4.5
 langdetect==1.0.9
 liftoff @ git+https://github.com/mariusdgm/liftoff.git@1f0f3a2f4c90b9d0a21658bc53d128aa00e65820
+llvmlite==0.44.0
 markdown-it-py==3.0.0
 MarkupSafe==2.1.5
 matplotlib==3.8.2
@@ -81,6 +82,7 @@ mujoco-py==2.1.2.14
 nbformat==5.10.3
 nest-asyncio==1.6.0
 networkx==3.3
+numba==0.61.0
 numpy==1.26.4
 onnx==1.16.1
 onnxruntime==1.20.1
@@ -124,13 +126,15 @@ RapidFuzz==3.11.0
 referencing==0.34.0
 requests==2.31.0
 rich==13.7.1
-rl-envs-forge==5.9.0
+rl-envs-forge==5.15.1
 rpds-py==0.18.0
 scikit-learn==1.4.1.post1
 scipy==1.12.0
 seaborn==0.13.2
+shap==0.47.0
 shapely==2.0.6
 six==1.16.0
+slicer==0.0.8
 smmap==5.0.1
 snowballstemmer==2.2.0
 Sphinx==7.2.6
@@ -166,5 +170,6 @@ urllib3==2.2.0
 wcwidth @ file:///home/conda/feedstock_root/build_artifacts/wcwidth_1700607916581/work
 weasyprint==63.1
 webencodings==0.5.1
+xgboost==2.1.4
 zipp==3.18.1
 zopfli==0.2.3.post1
