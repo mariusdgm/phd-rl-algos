@@ -1,4 +1,4 @@
-﻿absl-py==2.2.2
+absl-py==2.2.2
 alabaster==1.0.0
 anyascii==0.3.2
 asttokens==3.0.0
