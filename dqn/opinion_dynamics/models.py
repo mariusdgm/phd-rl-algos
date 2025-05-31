@@ -1,7 +1,5 @@
 import torch
 import torch.nn as nn
-from collections import OrderedDict
-import numpy as np
 import torch.nn.functional as F
 
 
@@ -50,14 +48,17 @@ class OpinionNet(nn.Module):
         features = self.fc(x)
 
         A_b_c_net = self.predict_A_b_c(features)
-        A_b_c_net = A_b_c_net.view(-1, self.nr_betas, 2 * self.nr_agents + 1)
+        A_b_c_net = A_b_c_net.view(-1, self.nr_betas, 2 * self.nr_agents + 1) # TODO: test if this decouples our optimizer
 
         A_diag = F.softplus(A_b_c_net[:, :, 1 : self.nr_agents + 1]) + 1e-6  # (B, J, N)
         b = A_b_c_net[:, :, self.nr_agents + 1 :]  # (B, J, N)
         c = A_b_c_net[:, :, 0]  # (B, J)
 
+        # print(f"A_diag shape: {A_diag.shape}, b shape: {b.shape}, c shape: {c.shape}")
+        
         output = {"A_diag": A_diag, "b": b, "c": c}
 
+        # We are braodcasting w over all J levels here
         if w is not None:
             w = w.unsqueeze(1)  # (B, 1, N)
             q = self.compute_q_values(w, A_diag, b, c)  # (B, J)
@@ -78,12 +79,12 @@ class OpinionNet(nn.Module):
             torch.Tensor: Optimal weight allocation \( w^* \), shape (batch_size, nr_betas, nr_agents).
         """
         A_inv = 1.0 / A_diag  # Inverse of diagonal A
-        w_star = A_inv * b  # Compute raw w*
+        w = A_inv * b  # Compute raw w*
 
-        return w_star
+        return w
 
     @staticmethod
-    def compute_q_values(w_star, A_diag, b, c):
+    def compute_q_values(w, A_diag, b, c):
         """
         Compute Q-values using the optimal weight allocation w*.
 
@@ -97,14 +98,20 @@ class OpinionNet(nn.Module):
             torch.Tensor: Computed Q-values, shape (batch_size, nr_betas).
         """
         assert (
-            w_star.shape == A_diag.shape == b.shape
-        ), f"Shape mismatch: w_star={w_star.shape}, A_diag={A_diag.shape}, b={b.shape}"
+            w.shape == A_diag.shape == b.shape
+        ), f"Shape mismatch: w_star={w.shape}, A_diag={A_diag.shape}, b={b.shape}"
 
-        quadratic_term = (w_star * (A_diag * w_star)) / 2
-        linear_term = w_star * b
-        q_values = c.unsqueeze(2) - quadratic_term + linear_term  # (B, J, N)
+        # Quadratic term: w^T A w = sum_i A_i * w_i^2
+        quadratic_term = 0.5 * (A_diag * w.pow(2)).sum(dim=2)  # shape (B, J)
 
-        q_values = q_values.sum(dim=2)
+        # Linear term: b^T w
+        linear_term = (b * w).sum(dim=2)  # shape (B, J)
+
+        # Total Q-value
+        q_values = c - quadratic_term + linear_term  # shape (B, J)
+        
+        assert q_values.shape == (w.shape[0], w.shape[1]), \
+            f"Expected shape (B, J), got {q_values.shape}"
         
         return q_values
 

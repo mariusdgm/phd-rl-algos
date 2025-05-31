@@ -141,8 +141,8 @@ def find_train_stats_file(folder_path):
 
 
 def process_training_stats(train_stats_file, cfg_data):
-    checkpoint = torch.load(train_stats_file)
 
+    checkpoint = torch.load(train_stats_file, weights_only=False)
     training_stats = checkpoint.get("training_stats", [])
     validation_stats = checkpoint.get("validation_stats", [])
     redo_stats = checkpoint.get("redo_scores", [])

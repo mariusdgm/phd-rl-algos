@@ -345,7 +345,7 @@ class AgentDQN:
         
 
     def load_models(self, models_load_file):
-        checkpoint = torch.load(models_load_file)
+        checkpoint = torch.load(models_load_file, weights_only=False)
         self.policy_model.load_state_dict(checkpoint["policy_model_state_dict"])
         self.policy_model.train()
         self.target_model.load_state_dict(checkpoint["target_model_state_dict"])
@@ -353,7 +353,7 @@ class AgentDQN:
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
     def load_training_stats(self, training_stats_file):
-        checkpoint = torch.load(training_stats_file)
+        checkpoint = torch.load(training_stats_file, weights_only=False)
 
         self.t = checkpoint["frame"]
         self.episodes = checkpoint["episode"]
@@ -440,9 +440,7 @@ class AgentDQN:
 
                 w_rand_noisy = self.policy_model.apply_action_noise(w_rand, noise_amplitude)
 
-                rand_beta_values = torch.tensor(
-                    [self.betas[i.item()] for i in rand_idx], dtype=torch.float32
-                ).unsqueeze(1).expand(-1, N)  # (B, N)
+                rand_beta_values = torch.tensor(self.betas)[rand_idx].unsqueeze(1).expand(-1, N)  # (B, N)
 
                 u = self.policy_model.compute_action_from_w(w_rand_noisy, rand_beta_values)
 

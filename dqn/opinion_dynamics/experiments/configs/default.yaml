@@ -14,28 +14,28 @@ agent_params:
     
     batch_size: 64
     training_freq: 4
-    target_model_update_freq: 4000
+    target_model_update_freq: 1000
     loss_fcn: mse_loss
 
-    action_w_noise_amplitude: 0.8
+    action_w_noise_amplitude: 0.5
 
     gamma: 0.99
     betas: [2]
 
     epsilon:
       start: 1.0
-      end: 0.01
-      decay: 450_000_0
+      end: 0.05
+      decay: 6_500_000
 
 estimator:
   model: OpinionNet
   args_:
-    lin_hidden_size: 32
+    lin_hidden_size: 64
 
 optim:
   name: Adam
   args_:
-    lr: 0.000001
+    lr: 0.00001
     eps: 0.0000001
         
 
