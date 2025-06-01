@@ -445,7 +445,7 @@ class AgentDQN:
                 u = self.policy_model.compute_action_from_w(w_rand_noisy, rand_beta_values)
 
                 w_full = torch.zeros_like(w_star)
-                w_full.scatter_(1, rand_idx.view(-1, 1, 1).expand(-1, 1, N), w_rand_noisy.unsqueeze(1))
+                w_full.scatter_(1, rand_idx.reshape(-1, 1, 1).expand(-1, 1, N), w_rand_noisy.unsqueeze(1))
 
                 q_rand = q_values.gather(1, rand_idx.unsqueeze(1)).squeeze(1)  # (B,)
                 q_rand_mean = q_rand.mean(dim=0)  # scalar
@@ -494,7 +494,7 @@ class AgentDQN:
         next_states = torch.tensor(np.stack(next_states), dtype=torch.float32)
 
         # beta_indices shape: (B,)
-        beta_indices = torch.tensor(beta_indices, dtype=torch.long).view(-1)
+        beta_indices = torch.tensor(beta_indices, dtype=torch.long).reshape(-1)
         ws = torch.tensor(np.stack(ws), dtype=torch.float32)  # (B, J, N)
 
         rewards = torch.tensor(np.array(rewards), dtype=torch.float32).unsqueeze(1)
