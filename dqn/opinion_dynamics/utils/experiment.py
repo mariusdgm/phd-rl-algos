@@ -245,7 +245,7 @@ def build_environment(random_initial_opinions=False):
     num_agents = 20
 
     if random_initial_opinions:
-        initial_opinions = np.random.uniform(low=0.0, high=1.0, size=num_nodes)
+        initial_opinions = np.random.uniform(low=0.0, high=1.0, size=num_agents)
 
     else:
         initial_opinions = np.linspace(0.3, 0, num_agents)
@@ -263,6 +263,7 @@ def build_environment(random_initial_opinions=False):
         normalize_reward=True,
         terminal_reward=0.5,
         seed=42,
+        terminate_when_converged=True
     )
 
     env.reset()
