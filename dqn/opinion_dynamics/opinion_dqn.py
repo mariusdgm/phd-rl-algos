@@ -333,10 +333,10 @@ class AgentDQN:
         
     def _read_and_init_envs(self):
         """Read dimensions of the input and output of the simulation environment"""
-        self.train_env = self._make_env(random_init=False)
+        self.train_env = self._make_env(random_init=True)
         self.validation_env = self._make_env(random_init=False)
         
-        self.train_s, _ = self.train_env.reset() 
+        self.train_s, _ = self.train_env.reset(randomize_opinions=True) 
         self.env_s, _ = self.validation_env.reset()
         
         self.in_features = self.train_env.observation_space.shape[0]
@@ -755,7 +755,7 @@ class AgentDQN:
         self.losses = []
         self.max_qs = []
 
-        self.train_s, _ = self.train_env.reset()
+        self.train_s, _ = self.train_env.reset(randomize_opinions=True)
 
     def display_training_epoch_info(self, stats):
         self.logger.info(
