@@ -2,6 +2,6 @@ optim:
   args_:
     lr: [0.00001, 0.0001]
     betas: [[0.95, 0.99], [0.5, 0.999]]
-    weight_decay: [0. 0.01]
+    weight_decay: [0, 0.01, 0.001]
    
    
