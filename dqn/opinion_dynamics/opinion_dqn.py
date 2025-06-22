@@ -333,7 +333,7 @@ class AgentDQN:
         
     def _read_and_init_envs(self):
         """Read dimensions of the input and output of the simulation environment"""
-        self.train_env = self._make_env(random_init=True)
+        self.train_env = self._make_env(random_init=False)
         self.validation_env = self._make_env(random_init=False)
         
         self.train_s, _ = self.train_env.reset(randomize_opinions=True) 

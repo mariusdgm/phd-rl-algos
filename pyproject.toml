@@ -8,7 +8,7 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.11"
-rl-envs-forge = "^3.4.2"
+rl-envs-forge = "^4.17.0"
 jax = {extras = ["cpu"], version = "^0.4.25"}
 jax-tqdm = "^0.1.2"
 dm-haiku = "^0.0.12"
