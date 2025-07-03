@@ -7,6 +7,6 @@ liftoff-prepare configs --do --runs-no 3
 ```
 
 ```
-liftoff training_opinion.py .\results\2025Jul01-141613_configs --procs-no 12
+liftoff training_opinion.py .\results\2025Jul03-020044_configs --procs-no 12
 ```
 

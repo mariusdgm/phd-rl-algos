@@ -257,6 +257,8 @@ def build_environment(random_initial_opinions=False):
         budget=1000.0,
         desired_opinion=1,
         tau=0.1,
+        connection_prob_range=(0.05, 0.1),
+        bidirectional_prob=0.1,
         max_steps=150,
         opinion_end_tolerance=0.05,
         control_beta=0.4,
@@ -264,8 +266,7 @@ def build_environment(random_initial_opinions=False):
         terminal_reward=0.5,
         seed=42,
         terminate_when_converged=True,
-        dynamics_model="coca"
-        
+        dynamics_model="coca",
     )
 
     env.reset()
