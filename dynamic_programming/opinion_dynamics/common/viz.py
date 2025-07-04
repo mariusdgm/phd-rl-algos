@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
+
 def interpolate_opinion_trajectory(env, opinions_over_time, actions, n_substeps=10):
     """
     Interpolate intermediate opinions between control steps using env.compute_dynamics.
@@ -28,17 +29,23 @@ def interpolate_opinion_trajectory(env, opinions_over_time, actions, n_substeps=
         u = actions[t]
 
         # Apply impulse control (treated as instantaneous at t * tau)
-        x = env.compute_dynamics(current_state=x_start, control_action=u, step_duration=0.0)
+        x = env.compute_dynamics(
+            current_state=x_start, control_action=u, step_duration=0.0
+        )
         interpolated.append(x.copy())
         times.append(t * env.tau)
 
+        # return None, None
         # Propagate over substeps
         for k in range(1, n_substeps + 1):
-            x = env.compute_dynamics(current_state=x, control_action=np.zeros_like(u), step_duration=dt)
+            x = env.compute_dynamics(
+                current_state=x, control_action=np.zeros_like(u), step_duration=dt
+            )
             interpolated.append(x.copy())
             times.append(t * env.tau + k * dt)
 
     return np.array(interpolated), np.array(times)
+
 
 def plot_action_heatmap(actions, step_labels=None):
     """
@@ -77,11 +84,12 @@ def plot_action_heatmap(actions, step_labels=None):
     ax.set_ylabel("Agents")
 
     ax.set_title("Control Actions Heatmap (Agents on Y-axis)")
-    ax.grid(visible=True, axis='y', color='white', linestyle='--', linewidth=0.5)
+    ax.grid(visible=True, axis="y", color="white", linestyle="--", linewidth=0.5)
 
     plt.tight_layout()
     plt.show()
-    
+
+
 def plot_campaign_budgets(optimal_budget_allocation, nodes_controlled, control_inputs):
     """
     Plot the budget allocation across campaigns and display the nodes controlled in each campaign.
@@ -139,6 +147,7 @@ def plot_campaign_budgets(optimal_budget_allocation, nodes_controlled, control_i
 
     plt.tight_layout()
     plt.show()
+
 
 def plot_campaign_budgets_with_order(optimal_budget_allocation, order, order0, umax):
     """
@@ -220,6 +229,7 @@ def plot_campaign_budgets_with_order(optimal_budget_allocation, order, order0, u
     plt.tight_layout()
     plt.show()
 
+
 def plot_opinions_over_time(opinions_over_time, time_points=None):
     """
     Plot the opinions of each agent over time.
@@ -286,8 +296,8 @@ def plot_budget_distribution(budget_distribution, affected_nodes):
 
 def visualize_policy_from_env(policy, env, nx, node_index):
     """
-    Visualize the policy with respect to the value of a specific node and 
-    the mean opinion of the network. Colors now represent the action value 
+    Visualize the policy with respect to the value of a specific node and
+    the mean opinion of the network. Colors now represent the action value
     continuously via a colorbar.
     """
     N = env.num_agents  # Number of agents
@@ -311,12 +321,12 @@ def visualize_policy_from_env(policy, env, nx, node_index):
     plt.figure(figsize=(10, 6))
     # Use a scatter plot colored by action value with a colormap
     sc = plt.scatter(
-        node_opinions, 
-        mean_opinions, 
-        c=action_values,        # color by the node's action
-        cmap="viridis",         # choose any colormap you like
-        s=50, 
-        alpha=0.8
+        node_opinions,
+        mean_opinions,
+        c=action_values,  # color by the node's action
+        cmap="viridis",  # choose any colormap you like
+        s=50,
+        alpha=0.8,
     )
 
     # Add a colorbar showing the range of action values
