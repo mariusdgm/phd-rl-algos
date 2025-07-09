@@ -1,4 +1,4 @@
 agent_params:
   args_:
-    training_freq: [10, 12]
-    target_model_update_freq: [5000, 6500]
+    training_freq: [4, 8]
+    target_model_update_freq: [5000]

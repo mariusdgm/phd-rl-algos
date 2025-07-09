@@ -256,7 +256,8 @@ def build_environment(random_initial_opinions=False):
         max_u=0.4,
         budget=1000.0,
         desired_opinion=1,
-        tau=0.1,
+        t_campaign=1,
+        t_s=0.1,
         connection_prob_range=(0.05, 0.1),
         bidirectional_prob=0.1,
         max_steps=150,
@@ -267,6 +268,7 @@ def build_environment(random_initial_opinions=False):
         seed=42,
         terminate_when_converged=True,
         dynamics_model="coca",
+        # dynamics_model="laplacian",
     )
 
     env.reset()
