@@ -20,7 +20,7 @@ agent_params:
     action_w_noise_amplitude: 0.3
 
     gamma: 0.99
-    betas: [2]
+    betas: [0, 2]
 
     epsilon:
       start: 1.0

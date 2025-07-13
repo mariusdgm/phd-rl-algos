@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 
 from dqn.opinion_dynamics.experiments.algos import centrality_based_continuous_control
 from dynamic_programming.opinion_dynamics.algo_infinite_horizon import value_iteration, extract_policy, create_state_grid
@@ -152,4 +153,69 @@ def run_centrality_policy(env, available_budget, max_steps=1000):
         np.array(rewards_over_time),         # shape: (num_control_steps,)
         np.array(actions_over_time),                   # list of length num_control_steps
         np.array(all_intermediate_states)              # list of arrays, each (num_substeps+1, num_agents)
+    )
+
+def run_policy_agent(agent, max_steps=1000):
+    """
+    Run the simulation using the agent’s policy (exploitation only).
+
+    Args:
+        agent: An already-trained AgentDQN instance.
+        max_steps: Maximum number of steps to run.
+
+    Returns:
+        opinions_over_time (np.ndarray): Array of opinions (states) over time (at t_campaign boundaries).
+        time_points (np.ndarray): Array of time stamps at each control step.
+        rewards_over_time (np.ndarray): Array of rewards collected at each step.
+        actions_over_time (np.ndarray): Array of actions taken at each step.
+        all_intermediate_states (np.ndarray): All intermediate states at t_s granularity.
+    """
+    time_points = [0.0]
+    rewards_over_time = []
+    actions_over_time = []
+    opinions_over_time = []
+    all_intermediate_states = []
+
+    env = agent.validation_env
+    current_time = 0.0
+
+    # Reset environment
+    state, _ = env.reset()
+    opinions_over_time.append(state.copy())
+
+    for step in range(max_steps):
+        # Convert state to batched tensor
+        state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
+
+        # Agent selects action (exploitation only)
+        action, _, _, _ = agent.select_action(
+            state_tensor, epsilon=0.0, random_action=False
+        )
+        action = np.squeeze(action)  # shape: (num_agents,)
+        actions_over_time.append(action.copy())
+
+        # Apply action
+        next_state, reward, done, truncated, info = env.step(action)
+        opinions_over_time.append(next_state.copy())
+        rewards_over_time.append(reward)
+        time_points.append(current_time)
+
+        # Collect intermediate fine-grained states
+        intermediate_states = info.get("intermediate_states")
+        if intermediate_states is not None:
+            all_intermediate_states.append(intermediate_states.copy())
+
+        current_time += env.t_campaign
+        state = next_state
+
+        if done or truncated:
+            break
+
+    print(f"Simulation ended at step {step}: done={done}, truncated={truncated}")
+    return (
+        np.array(opinions_over_time),        # shape: (steps+1, num_agents)
+        np.array(time_points),                # shape: (steps+1,)
+        np.array(rewards_over_time),          # shape: (steps,)
+        np.array(actions_over_time),          # shape: (steps, num_agents)
+        np.array(all_intermediate_states)     # shape: (steps, num_substeps+1, num_agents)
     )
