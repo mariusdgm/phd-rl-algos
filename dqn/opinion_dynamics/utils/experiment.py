@@ -240,6 +240,58 @@ def create_adjacency_matrix_from_links(num_nodes, links):
 #     return env
 
 
+class EnvironmentFactory:
+    def __init__(self):
+        """
+        Initializes the environment factory with a base configuration.
+        """
+        self.base_config = {
+            "num_agents": 20,
+            "max_u": 0.4,
+            "budget": 1000.0,
+            "desired_opinion": 1.0,
+            "t_campaign": 1.0,
+            "t_s": 0.1,
+            "connection_prob_range": (0.05, 0.1),
+            "bidirectional_prob": 0.1,
+            "max_steps": 150,
+            "opinion_end_tolerance": 0.05,
+            "control_beta": 0.4,
+            "normalize_reward": True,
+            "terminal_reward": 0.5,
+            "terminate_when_converged": True,
+            "dynamics_model": "coca",  # or "laplacian"
+            "seed": 42,
+        }
+
+    def get_randomized_env(self, seed: int = None):
+        """Returns a training environment with randomized opinions and optional seed."""
+        config = self.base_config.copy()
+        if seed is not None:
+            config["seed"] = seed
+
+        num_agents = config["num_agents"]
+        initial_opinions = np.random.uniform(low=0.1, high=0.99, size=num_agents)
+        config["initial_opinions"] = initial_opinions
+
+        return NetworkGraph(**config)
+
+    def get_validation_env(self, version: int = 0):
+        """Returns a validation environment with controlled variation by version."""
+        config = self.base_config.copy()
+        num_agents = config["num_agents"]
+
+        if version == 0:
+            config["initial_opinions"] = np.linspace(0.3, 0.1, num_agents)
+        elif version == 1:
+            config["initial_opinions"] = np.linspace(0.4, 0.6, num_agents)
+        elif version == 2:
+            config["initial_opinions"] = np.linspace(0.1, 0.7, num_agents)
+        else:
+            raise ValueError(f"Unknown validation version: {version}")
+
+        return NetworkGraph(**config)
+    
 def build_environment(random_initial_opinions=False):
 
     num_agents = 20

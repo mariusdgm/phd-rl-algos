@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 # Suppose your agent code is in agent_dqn.py
 from dqn.opinion_dynamics.opinion_dqn import AgentDQN
-from dqn.opinion_dynamics.utils.experiment import build_environment
+from dqn.opinion_dynamics.utils.experiment import build_environment, EnvironmentFactory
 
 
 @pytest.fixture
