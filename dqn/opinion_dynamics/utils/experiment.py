@@ -263,6 +263,8 @@ class EnvironmentFactory:
             "dynamics_model": "coca",  # or "laplacian"
             "seed": 42,
         }
+        
+        self.validation_versions = [0, 1, 2]
 
     def get_randomized_env(self, seed: int = None):
         """Returns a training environment with randomized opinions and optional seed."""

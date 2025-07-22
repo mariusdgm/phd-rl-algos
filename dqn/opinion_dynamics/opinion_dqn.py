@@ -15,6 +15,7 @@ sys.path.append(proj_root)
 import datetime
 import torch
 import numpy as np
+from collections import defaultdict
 
 from pathlib import Path
 from typing import Dict
@@ -327,19 +328,39 @@ class AgentDQN:
 
         self.logger.info("Initialized networks and optimizer.")
 
-    def _make_env(self, random_init=False):
+    def _make_train_env(self):
         return self.env_factory.get_randomized_env()
     
     def _make_validation_env(self):
-        return self.env_factory.get_validation_env(version=0)
+        total_versions = len(self.env_factory.validation_versions)
+
+        # Determine how many times each version has been used
+        usage_counts = [
+            (version, self.validation_env_counters.get(version, 0))
+            for version in range(total_versions)
+        ]
+
+        # Find the version(s) with the minimum usage
+        min_usage = min(count for _, count in usage_counts)
+        least_used_versions = [v for v, count in usage_counts if count == min_usage]
+
+        # Break ties by choosing the smallest version index
+        chosen_version = min(least_used_versions)
+
+        env = self.env_factory.get_validation_env(version=chosen_version)
+        self.validation_env_counters[chosen_version] += 1
+        return env
     
     def _read_and_init_envs(self):
         """Read dimensions of the input and output of the simulation environment"""
-        self.train_env = self._make_env(random_init=True)
-        self.validation_env = self._make_env(random_init=False)
+        self.env_factory = EnvironmentFactory()
+        self.validation_env_counters = defaultdict(int)
+
+        self.train_env = self._make_train_env()
+        self.validation_env = self._make_validation_env()
         
-        self.train_s, _ = self.train_env.reset(randomize_opinions=True) 
-        self.env_s, _ = self.validation_env.reset()
+        self.train_env_s, _ = self.train_env.reset(randomize_opinions=True) 
+        self.val_env_s, _ = self.validation_env.reset()
         
         self.in_features = self.train_env.observation_space.shape[0]
         self.num_actions = self.train_env.action_space.shape[0]
@@ -681,15 +702,15 @@ class AgentDQN:
         is_terminated = False
         truncated = False
         while (not is_terminated) and (not truncated) and (epoch_t < train_frames):
-            self.logger.debug(f"State (s) shape before step: {self.train_s.shape}")
+            self.logger.debug(f"State (s) shape before step: {self.train_env_s.shape}")
 
             action, beta_idx, w, max_q = self.select_action(
-                torch.tensor(self.train_s, dtype=torch.float32),
+                torch.tensor(self.train_env_s, dtype=torch.float32),
                 epsilon=self.epsilon_by_frame(self.t),
             )
             action = np.squeeze(action)
 
-            self.logger.debug(f"State shape: {self.train_s.shape}")
+            self.logger.debug(f"State shape: {self.train_env_s.shape}")
             self.logger.debug(f"Action shape: {action.shape}")
             self.logger.debug(f"Beta index: {beta_idx}")
 
@@ -701,7 +722,7 @@ class AgentDQN:
             self.logger.debug(f"State (s') shape after step: {s_prime.shape}")
 
             self.replay_buffer.append(
-                self.train_s, (beta_idx, w), reward, s_prime, is_terminated
+                self.train_env_s, (beta_idx, w), reward, s_prime, is_terminated
             )
             self.max_qs.append(max_q)
 
@@ -732,7 +753,7 @@ class AgentDQN:
             epoch_t += 1
             self.ep_frames += 1
 
-            self.train_s = s_prime
+            self.train_env_s = s_prime
 
         return (
             is_terminated,
@@ -757,7 +778,7 @@ class AgentDQN:
         self.losses = []
         self.max_qs = []
 
-        self.train_s, _ = self.train_env.reset(randomize_opinions=True)
+        self.train_env_s, _ = self.train_env.reset(randomize_opinions=True)
 
     def display_training_epoch_info(self, stats):
         self.logger.info(
@@ -935,6 +956,8 @@ class AgentDQN:
         ep_frames = 0
         max_qs = []
 
+        # Remake the env because we cycle through setups
+        self.validation_env = self._make_validation_env()
         s, info = self.validation_env.reset()
         s = torch.tensor(s, device=device).float()
 

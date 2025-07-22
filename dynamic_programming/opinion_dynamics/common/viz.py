@@ -230,7 +230,7 @@ def plot_campaign_budgets_with_order(optimal_budget_allocation, order, order0, u
     plt.show()
 
 
-def plot_opinions_over_time(opinions_over_time, time_points=None):
+def plot_opinions_over_time(opinions_over_time, time_points=None, title=None):
     """
     Plot the opinions of each agent over time.
 
@@ -238,25 +238,20 @@ def plot_opinions_over_time(opinions_over_time, time_points=None):
         opinions_over_time (np.ndarray): Array of shape (num_steps, num_agents) containing the opinions at each time step.
         time_points (np.ndarray, optional): Array of time points corresponding to each sample.
                                             If None, time steps are used as the x-axis.
+        title (str, optional): Custom title for the plot. Defaults to "Opinion Convergence Over Time".
     """
-    num_agents = opinions_over_time.shape[
-        1
-    ]  # Infer the number of agents from the array shape
+    num_agents = opinions_over_time.shape[1]
 
     if time_points is None:
-        # Use time steps as the x-axis
         time_points = np.arange(opinions_over_time.shape[0])
 
-    # Plot the opinions over time for each agent
     plt.figure(figsize=(12, 6))
     for agent_idx in range(num_agents):
-        plt.plot(
-            time_points, opinions_over_time[:, agent_idx], label=f"Agent {agent_idx}"
-        )
+        plt.plot(time_points, opinions_over_time[:, agent_idx], label=f"Agent {agent_idx}")
 
     plt.xlabel("Time" if time_points is not None else "Time Steps")
     plt.ylabel("Opinion")
-    plt.title("Opinion Convergence Over Time")
+    plt.title(title if title is not None else "Opinion Convergence Over Time")
     plt.grid(True)
     plt.tight_layout()
     plt.show()
