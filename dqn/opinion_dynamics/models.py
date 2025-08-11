@@ -167,9 +167,6 @@ class OpinionNetIndependentABC(nn.Module):
             nn.ReLU(),
         )
 
-        # TODO: for A and b always use the same ones, keep difference c vals for ner of betas
-        # Single A B should be better. 
-        
         # Predict \( q(x, \beta; \theta), A, b \) for all \(\beta\) grid points
         self.predict_A_b_c = nn.Linear(
             self.lin_hidden_size, self.nr_betas * (2 * self.nr_agents + 1)
