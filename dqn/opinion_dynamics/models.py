@@ -3,9 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class OpinionNet(nn.Module):
+class OpinionNetCommonABC(nn.Module):
     def __init__(self, nr_agents, nr_betas=2, lin_hidden_size=64):
-        super(OpinionNet, self).__init__()
+        super(OpinionNetCommonABC, self).__init__()
 
         self.nr_agents = nr_agents
         self.nr_betas = nr_betas  # Number of \(\beta\) grid points
@@ -151,9 +151,9 @@ class OpinionNet(nn.Module):
         u = w * beta 
         return u
     
-class OpinionNetIndependentABC(nn.Module):
+class OpinionNet(nn.Module):
     def __init__(self, nr_agents, nr_betas=2, lin_hidden_size=64):
-        super(OpinionNetIndependentABC, self).__init__()
+        super(OpinionNet, self).__init__()
 
         self.nr_agents = nr_agents
         self.nr_betas = nr_betas  # Number of \(\beta\) grid points

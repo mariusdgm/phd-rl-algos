@@ -1,5 +1,5 @@
 agent_params:
-  model: [OpinionNet, OpinionNetIndependentABC]
+  model: [OpinionNet, OpinionNetCommonABC]
 
   # args_:
   #   betas: [[2], [0, 1, 2]]
