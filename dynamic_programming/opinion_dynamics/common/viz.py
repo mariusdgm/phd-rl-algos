@@ -81,7 +81,7 @@ def plot_action_heatmap(actions, step_labels=None):
     agent_labels = [f"N{i}" for i in range(N)]
     ax.set_yticks(np.arange(N) + 0.5)
     ax.set_yticklabels(agent_labels)
-    ax.set_ylabel("Agents")
+    ax.set_ylabel("Nodes")
 
     ax.set_title("Control Actions Heatmap (Agents on Y-axis)")
     ax.grid(visible=True, axis="y", color="white", linestyle="--", linewidth=0.5)
