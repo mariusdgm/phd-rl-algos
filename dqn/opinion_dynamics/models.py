@@ -3,9 +3,41 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class OpinionNetCommonABC(nn.Module):
+class OpinionNetFixedW(nn.Module):
     def __init__(self, nr_agents, nr_betas=2, lin_hidden_size=64):
-        super(OpinionNetCommonABC, self).__init__()
+        super(OpinionNetFixedW, self).__init__()
+
+        self.nr_agents = nr_agents
+        self.nr_betas = nr_betas  
+        self.lin_hidden_size = lin_hidden_size
+
+        self.fc = nn.Sequential(
+            nn.Linear(self.nr_agents, self.lin_hidden_size),
+            nn.ReLU(),
+            nn.Linear(self.lin_hidden_size, self.lin_hidden_size),
+            nn.ReLU(),
+        )
+
+        self.predict_c = nn.Linear(self.lin_hidden_size, self.nr_betas)
+
+        with torch.no_grad():
+            self.predict_c.bias.zero_()
+
+    def forward(self, x):
+        """
+        Args:
+            x (torch.Tensor): Input state, shape (B, N)
+        Returns:
+            dict with:
+                - c (torch.Tensor): shape (B, J)
+        """
+        features = self.fc(x)
+        c = self.predict_c(features)  # (B, J)
+        return {"c": c}
+    
+class OpinionNetCommonAB(nn.Module):
+    def __init__(self, nr_agents, nr_betas=2, lin_hidden_size=64):
+        super(OpinionNetCommonAB, self).__init__()
 
         self.nr_agents = nr_agents
         self.nr_betas = nr_betas  # Number of \(\beta\) grid points

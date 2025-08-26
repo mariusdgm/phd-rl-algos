@@ -325,7 +325,7 @@ class AgentDQN:
         self.optimizer = optim.Adam(
             self.policy_model.parameters(), **optimizer_settings["args"]
         )
-
+        
         self.logger.info("Initialized networks and optimizer.")
 
     def _make_train_env(self):
@@ -423,91 +423,145 @@ class AgentDQN:
 
         self.logger.debug(f"Training status saved at t = {self.t}")
 
+    def uniform_weights(num_agents):
+        return np.ones(num_agents, dtype=np.float32) / num_agents
+
     def select_action(self, state: torch.Tensor, epsilon: float = None, random_action: bool = False):
         """
-        Select an action by evaluating the Q-function over the β grid.
-
+        Select an action by picking beta and applying uniform weights.
         Returns:
-            Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[float]]:
-                - u: continuous action (B, N)
-                - beta_idx: index of selected beta (B,)
-                - w: all candidate weight vectors (B, J, N)
-                - Q-value (scalar)
+            - u: continuous action (B, N)
+            - beta_idx: index of selected beta (B,)
+            - w: all candidate weight vectors (B, J, N) [all uniform]
+            - Q-value (scalar)
         """
         if state.dim() == 1:
             state = state.unsqueeze(0)
 
+        B = state.shape[0]
+        N = self.num_actions
+        J = len(self.betas)
+        uniform_w = torch.ones(N, dtype=torch.float32) / N  # shape (N,)
+        all_uniform_w = uniform_w.unsqueeze(0).repeat(J, 1)  # (J, N)
+        w_full = all_uniform_w.unsqueeze(0).repeat(B, 1, 1)  # (B, J, N)
+
         with torch.no_grad():
-            # === Forward pass ===
+            # Use only c (value head) for each beta as Q(s, beta)
             abc_model = self.policy_model(state)
-            A_diag, b, c = abc_model["A_diag"], abc_model["b"], abc_model["c"]
-            B, J, N = A_diag.shape
+            c = abc_model["c"]  # shape (B, J)
+            q_values = c  # shape (B, J)
 
-            assert b.shape == (B, J, N), f"b shape mismatch: {b.shape}"
-            assert c.shape == (B, J), f"c shape mismatch: {c.shape}"
-
-            w_star = self.policy_model.compute_w_star(A_diag, b)  # (B, J, N)
-            q_values = self.policy_model.compute_q_values(w_star, A_diag, b, c)  # (B, J)
-
-            assert w_star.shape == (B, J, N), f"w_star shape mismatch: {w_star.shape}"
-            assert q_values.shape == (B, J), f"q_values shape mismatch: {q_values.shape}"
-
-            noise_amplitude = self.action_w_noise_amplitude * epsilon
-
-            # === RANDOM ACTION BRANCH ===
+            # Epsilon-greedy beta selection
             if random_action or (epsilon is not None and np.random.rand() < epsilon):
-                rand_idx = torch.randint(low=0, high=J, size=(B,), dtype=torch.long)
+                beta_idx = torch.randint(low=0, high=J, size=(B,), dtype=torch.long)
+            else:
+                _, beta_idx = q_values.max(dim=1)  # shape: (B,)
 
-                w_rand = w_star.gather(1, rand_idx.unsqueeze(1).unsqueeze(2).expand(-1, 1, N)).squeeze(1)  # (B, N)
-                assert w_rand.shape == (B, N), f"w_rand shape: {w_rand.shape}"
+            # Construct action: beta * uniform weights
+            betas_tensor = torch.tensor([self.betas[int(i)] for i in beta_idx], dtype=torch.float32)
+            action = betas_tensor.unsqueeze(1) * uniform_w.unsqueeze(0)  # (B, N)
 
-                w_rand_noisy = self.policy_model.apply_action_noise(w_rand, noise_amplitude)
+            # For consistency with buffer, scatter into w_full
+            w_selected = all_uniform_w[beta_idx]  # (B, N)
+            w_full.zero_()
+            for b in range(B):
+                w_full[b, beta_idx[b], :] = uniform_w
 
-                rand_beta_values = torch.tensor(self.betas)[rand_idx].unsqueeze(1).expand(-1, N)  # (B, N)
-
-                u = self.policy_model.compute_action_from_w(w_rand_noisy, rand_beta_values)
-
-                w_full = torch.zeros_like(w_star)
-                w_full.scatter_(1, rand_idx.reshape(-1, 1, 1).expand(-1, 1, N), w_rand_noisy.unsqueeze(1))
-
-                q_rand = q_values.gather(1, rand_idx.unsqueeze(1)).squeeze(1)  # (B,)
-                q_rand_mean = q_rand.mean(dim=0)  # scalar
-
-                return (
-                    u.cpu().numpy(),
-                    rand_idx.cpu().numpy().astype(np.int64),
-                    w_full.cpu().numpy(),
-                    q_rand_mean.item(),
-                )
-
-            # === GREEDY ACTION BRANCH ===
-            max_q, beta_idx = q_values.max(dim=1)  # (B,)
-            beta_idx_exp = beta_idx.unsqueeze(1).unsqueeze(2).expand(-1, 1, N)
-
-            assert beta_idx.shape == (B,), f"beta_idx shape: {beta_idx.shape}"
-            assert beta_idx_exp.shape == (B, 1, N), f"beta_idx_exp shape: {beta_idx_exp.shape}"
-
-            optimal_w = w_star.gather(1, beta_idx_exp).squeeze(1)  # (B, N)
-
-            optimal_w_noisy = self.policy_model.apply_action_noise(optimal_w, noise_amplitude)
-
-            beta_values = torch.tensor(
-                [self.betas[int(i)] for i in beta_idx], dtype=torch.float32
-            ).unsqueeze(1).expand(-1, N)  # (B, N)
-
-            u = self.policy_model.compute_action_from_w(optimal_w_noisy, beta_values)
-
-            w_full = torch.zeros_like(w_star)
-            w_full.scatter_(1, beta_idx_exp, optimal_w_noisy.unsqueeze(1))
-
-            assert u.shape == (B, N), f"u shape: {u.shape}"
+            avg_q = q_values[range(B), beta_idx].mean().item()
 
             return (
-                u.cpu().numpy(),
+                action.cpu().numpy(),
                 beta_idx.cpu().numpy().astype(np.int64),
                 w_full.cpu().numpy(),
-                max_q.mean().item(),
+                avg_q,
             )
+
+    # Original select action
+    # def select_action(self, state: torch.Tensor, epsilon: float = None, random_action: bool = False):
+    #     """
+    #     Select an action by evaluating the Q-function over the β grid.
+
+    #     Returns:
+    #         Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[float]]:
+    #             - u: continuous action (B, N)
+    #             - beta_idx: index of selected beta (B,)
+    #             - w: all candidate weight vectors (B, J, N)
+    #             - Q-value (scalar)
+    #     """
+    #     if state.dim() == 1:
+    #         state = state.unsqueeze(0)
+
+    #     with torch.no_grad():
+    #         # === Forward pass ===
+    #         abc_model = self.policy_model(state)
+    #         A_diag, b, c = abc_model["A_diag"], abc_model["b"], abc_model["c"]
+    #         B, J, N = A_diag.shape
+
+    #         assert b.shape == (B, J, N), f"b shape mismatch: {b.shape}"
+    #         assert c.shape == (B, J), f"c shape mismatch: {c.shape}"
+
+    #         w_star = self.policy_model.compute_w_star(A_diag, b)  # (B, J, N)
+    #         q_values = self.policy_model.compute_q_values(w_star, A_diag, b, c)  # (B, J)
+
+    #         assert w_star.shape == (B, J, N), f"w_star shape mismatch: {w_star.shape}"
+    #         assert q_values.shape == (B, J), f"q_values shape mismatch: {q_values.shape}"
+
+    #         noise_amplitude = self.action_w_noise_amplitude * epsilon
+
+    #         # === RANDOM ACTION BRANCH ===
+    #         if random_action or (epsilon is not None and np.random.rand() < epsilon):
+    #             rand_idx = torch.randint(low=0, high=J, size=(B,), dtype=torch.long)
+
+    #             w_rand = w_star.gather(1, rand_idx.unsqueeze(1).unsqueeze(2).expand(-1, 1, N)).squeeze(1)  # (B, N)
+    #             assert w_rand.shape == (B, N), f"w_rand shape: {w_rand.shape}"
+
+    #             w_rand_noisy = self.policy_model.apply_action_noise(w_rand, noise_amplitude)
+
+    #             rand_beta_values = torch.tensor(self.betas)[rand_idx].unsqueeze(1).expand(-1, N)  # (B, N)
+
+    #             u = self.policy_model.compute_action_from_w(w_rand_noisy, rand_beta_values)
+
+    #             w_full = torch.zeros_like(w_star)
+    #             w_full.scatter_(1, rand_idx.reshape(-1, 1, 1).expand(-1, 1, N), w_rand_noisy.unsqueeze(1))
+
+    #             q_rand = q_values.gather(1, rand_idx.unsqueeze(1)).squeeze(1)  # (B,)
+    #             q_rand_mean = q_rand.mean(dim=0)  # scalar
+
+    #             return (
+    #                 u.cpu().numpy(),
+    #                 rand_idx.cpu().numpy().astype(np.int64),
+    #                 w_full.cpu().numpy(),
+    #                 q_rand_mean.item(),
+    #             )
+
+    #         # === GREEDY ACTION BRANCH ===
+    #         max_q, beta_idx = q_values.max(dim=1)  # (B,)
+    #         beta_idx_exp = beta_idx.unsqueeze(1).unsqueeze(2).expand(-1, 1, N)
+
+    #         assert beta_idx.shape == (B,), f"beta_idx shape: {beta_idx.shape}"
+    #         assert beta_idx_exp.shape == (B, 1, N), f"beta_idx_exp shape: {beta_idx_exp.shape}"
+
+    #         optimal_w = w_star.gather(1, beta_idx_exp).squeeze(1)  # (B, N)
+
+    #         optimal_w_noisy = self.policy_model.apply_action_noise(optimal_w, noise_amplitude)
+
+    #         beta_values = torch.tensor(
+    #             [self.betas[int(i)] for i in beta_idx], dtype=torch.float32
+    #         ).unsqueeze(1).expand(-1, N)  # (B, N)
+
+    #         u = self.policy_model.compute_action_from_w(optimal_w_noisy, beta_values)
+
+    #         w_full = torch.zeros_like(w_star)
+    #         w_full.scatter_(1, beta_idx_exp, optimal_w_noisy.unsqueeze(1))
+
+    #         assert u.shape == (B, N), f"u shape: {u.shape}"
+
+    #         return (
+    #             u.cpu().numpy(),
+    #             beta_idx.cpu().numpy().astype(np.int64),
+    #             w_full.cpu().numpy(),
+    #             max_q.mean().item(),
+    #         )
             
     def model_learn(self, sample, debug=True):
         """Compute the loss with TD learning."""
