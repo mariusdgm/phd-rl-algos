@@ -19,7 +19,7 @@ from liftoff import parse_opts
 
 from opinion_dqn import AgentDQN
 from utils import my_logging
-from utils.experiment import seed_everything, create_path_to_experiment_folder, build_environment
+from utils.experiment import seed_everything, create_path_to_experiment_folder
 from utils.generic import convert_namespace_to_dict
 
 

@@ -423,58 +423,51 @@ class AgentDQN:
 
         self.logger.debug(f"Training status saved at t = {self.t}")
 
-    def uniform_weights(num_agents):
-        return np.ones(num_agents, dtype=np.float32) / num_agents
 
     def select_action(self, state: torch.Tensor, epsilon: float = None, random_action: bool = False):
-        """
-        Select an action by picking beta and applying uniform weights.
-        Returns:
-            - u: continuous action (B, N)
-            - beta_idx: index of selected beta (B,)
-            - w: all candidate weight vectors (B, J, N) [all uniform]
-            - Q-value (scalar)
-        """
         if state.dim() == 1:
             state = state.unsqueeze(0)
-
-        B = state.shape[0]
+        B = state.shape[0]  # Always 1
         N = self.num_actions
         J = len(self.betas)
-        uniform_w = torch.ones(N, dtype=torch.float32) / N  # shape (N,)
+        uniform_w = torch.ones(N, dtype=torch.float32) / N  # (N,)
         all_uniform_w = uniform_w.unsqueeze(0).repeat(J, 1)  # (J, N)
-        w_full = all_uniform_w.unsqueeze(0).repeat(B, 1, 1)  # (B, J, N)
+        w_full = all_uniform_w.unsqueeze(0).repeat(B, 1, 1)  # (1, J, N)
 
         with torch.no_grad():
-            # Use only c (value head) for each beta as Q(s, beta)
-            abc_model = self.policy_model(state)
-            c = abc_model["c"]  # shape (B, J)
-            q_values = c  # shape (B, J)
-
-            # Epsilon-greedy beta selection
+            c = self.policy_model(state)["c"]  # (1, J)
             if random_action or (epsilon is not None and np.random.rand() < epsilon):
-                beta_idx = torch.randint(low=0, high=J, size=(B,), dtype=torch.long)
+                beta_idx = torch.randint(low=0, high=J, size=(1,), dtype=torch.long)
+                action_type = "random"
             else:
-                _, beta_idx = q_values.max(dim=1)  # shape: (B,)
+                _, beta_idx = c.max(dim=1)  # (1,)
+                action_type = "greedy"
 
-            # Construct action: beta * uniform weights
             betas_tensor = torch.tensor([self.betas[int(i)] for i in beta_idx], dtype=torch.float32)
-            action = betas_tensor.unsqueeze(1) * uniform_w.unsqueeze(0)  # (B, N)
-
-            # For consistency with buffer, scatter into w_full
-            w_selected = all_uniform_w[beta_idx]  # (B, N)
+            action = betas_tensor.unsqueeze(1) * uniform_w.unsqueeze(0)  # (1, N)
             w_full.zero_()
-            for b in range(B):
-                w_full[b, beta_idx[b], :] = uniform_w
+            w_full[0, beta_idx[0], :] = uniform_w
+            avg_q = c[0, beta_idx[0]].item()
 
-            avg_q = q_values[range(B), beta_idx].mean().item()
+        # Grouped logging at the end, conditional on self.t
+        if self.t % 100000 == 0:
+            self.logger.info(f"select_action: state shape: {state.shape}")
+            self.logger.info(f"select_action: uniform_w shape: {uniform_w.shape}")
+            self.logger.info(f"select_action: all_uniform_w shape: {all_uniform_w.shape}")
+            self.logger.info(f"select_action: w_full shape: {w_full.shape}")
+            self.logger.info(f"select_action: q_values (c) shape: {c.shape}")
+            self.logger.info(f"select_action: ({action_type}) beta_idx: {beta_idx}")
+            self.logger.info(f"select_action: betas_tensor shape: {betas_tensor.shape}, value: {betas_tensor}")
+            self.logger.info(f"select_action: action shape: {action.shape}")
+            self.logger.info(f"select_action: w_full after scatter shape: {w_full.shape}")
+            self.logger.info(f"select_action: avg_q: {avg_q}")
 
-            return (
-                action.cpu().numpy(),
-                beta_idx.cpu().numpy().astype(np.int64),
-                w_full.cpu().numpy(),
-                avg_q,
-            )
+        return (
+            action.cpu().numpy(),             # (1, N)
+            beta_idx.cpu().numpy().astype(np.int64),  # (1,)
+            w_full.cpu().numpy(),             # (1, J, N)
+            avg_q,
+        )
 
     # Original select action
     # def select_action(self, state: torch.Tensor, epsilon: float = None, random_action: bool = False):
@@ -562,7 +555,7 @@ class AgentDQN:
     #             w_full.cpu().numpy(),
     #             max_q.mean().item(),
     #         )
-            
+               
     def model_learn(self, sample, debug=True):
         """Compute the loss with TD learning."""
         states, (beta_indices, ws), rewards, next_states, dones = sample
