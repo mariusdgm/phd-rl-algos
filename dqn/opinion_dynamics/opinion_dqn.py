@@ -449,18 +449,17 @@ class AgentDQN:
             w_full[0, beta_idx[0], :] = uniform_w
             avg_q = c[0, beta_idx[0]].item()
 
-        # Grouped logging at the end, conditional on self.t
-        if self.t % 100000 == 0:
-            self.logger.info(f"select_action: state shape: {state.shape}")
-            self.logger.info(f"select_action: uniform_w shape: {uniform_w.shape}")
-            self.logger.info(f"select_action: all_uniform_w shape: {all_uniform_w.shape}")
-            self.logger.info(f"select_action: w_full shape: {w_full.shape}")
-            self.logger.info(f"select_action: q_values (c) shape: {c.shape}")
-            self.logger.info(f"select_action: ({action_type}) beta_idx: {beta_idx}")
-            self.logger.info(f"select_action: betas_tensor shape: {betas_tensor.shape}, value: {betas_tensor}")
-            self.logger.info(f"select_action: action shape: {action.shape}")
-            self.logger.info(f"select_action: w_full after scatter shape: {w_full.shape}")
-            self.logger.info(f"select_action: avg_q: {avg_q}")
+        # if self.t % 100000 == 0:
+        #     self.logger.info(f"select_action: state shape: {state.shape}")
+        #     self.logger.info(f"select_action: uniform_w shape: {uniform_w.shape}")
+        #     self.logger.info(f"select_action: all_uniform_w shape: {all_uniform_w.shape}")
+        #     self.logger.info(f"select_action: w_full shape: {w_full.shape}")
+        #     self.logger.info(f"select_action: q_values (c) shape: {c.shape}")
+        #     self.logger.info(f"select_action: ({action_type}) beta_idx: {beta_idx}")
+        #     self.logger.info(f"select_action: betas_tensor shape: {betas_tensor.shape}, value: {betas_tensor}")
+        #     self.logger.info(f"select_action: action shape: {action.shape}")
+        #     self.logger.info(f"select_action: w_full after scatter shape: {w_full.shape}")
+        #     self.logger.info(f"select_action: avg_q: {avg_q}")
 
         return (
             action.cpu().numpy(),             # (1, N)
@@ -556,71 +555,116 @@ class AgentDQN:
     #             max_q.mean().item(),
     #         )
                
+    # def model_learn(self, sample, debug=True):
+    #     """Compute the loss with TD learning."""
+    #     states, (beta_indices, ws), rewards, next_states, dones = sample
+
+    #     states = torch.tensor(np.stack(states), dtype=torch.float32)
+    #     next_states = torch.tensor(np.stack(next_states), dtype=torch.float32)
+
+    #     # beta_indices shape: (B,)
+    #     beta_indices = torch.tensor(beta_indices, dtype=torch.long).reshape(-1)
+    #     ws = torch.tensor(np.stack(ws), dtype=torch.float32)  # (B, J, N)
+
+    #     rewards = torch.tensor(np.array(rewards), dtype=torch.float32).unsqueeze(1)
+    #     dones = torch.tensor(np.array(dones), dtype=torch.float32).unsqueeze(1)
+
+    #     self.logger.debug(
+    #         f"States shape: {states.shape}, Next States shape: {next_states.shape}"
+    #     )
+    #     self.logger.debug(
+    #         f"Beta indices shape: {beta_indices.shape}, W shape: {ws.shape}"
+    #     )
+    #     self.logger.debug(f"Rewards shape: {rewards.shape}, Dones shape: {dones.shape}")
+
+    #     self.policy_model.train()
+    #     abc_model = self.policy_model(states)
+    #     # shapes: A_diag: (B, J, N), b: (B, J, N), c: (B, J)
+    #     A_diag = abc_model["A_diag"]
+    #     b = abc_model["b"]
+    #     c = abc_model["c"]
+    #     self.logger.debug(
+    #         f"A_diag shape: {A_diag.shape}, b shape: {b.shape}, c shape: {c.shape}"
+    #     )
+
+    #     assert ws.shape == A_diag.shape, f"ws: {ws.shape}, A_diag: {A_diag.shape}"
+
+    #     q_values = self.policy_model.compute_q_values(ws, A_diag, b, c)  # (B, J)
+
+    #     # Gather Q-values at the chosen beta index for each sample
+
+    #     selected_q_value = torch.gather(
+    #         q_values, dim=1, index=beta_indices.unsqueeze(1)
+    #     )  # (B, 1)
+
+    #     # Next state values
+    #     abc_model_target = self.target_model(next_states)
+    #     A_diag_target = abc_model_target["A_diag"]
+    #     b_target = abc_model_target["b"]
+    #     c_target = abc_model_target["c"]
+    #     w_star_next = self.target_model.compute_w_star(A_diag_target, b_target)
+    #     next_q_values = self.target_model.compute_q_values(
+    #         w_star_next, A_diag_target, b_target, c_target
+    #     )  # (B, J)
+    #     max_next_q, _ = next_q_values.max(dim=1, keepdim=True)  # shape: (B, 1)
+
+    #     expected_q_value = rewards + self.gamma * max_next_q * (1 - dones)
+
+    #     assert (
+    #         selected_q_value.shape == expected_q_value.shape == (states.shape[0], 1)
+    #     ), f"Shape mismatch: selected_q={selected_q_value.shape}, expected_q={expected_q_value.shape}"
+
+    #     loss = F.mse_loss(selected_q_value, expected_q_value)
+    #     self.optimizer.zero_grad()
+    #     loss.backward()
+    #     self.optimizer.step()
+
+    #     return loss.item()
+    
     def model_learn(self, sample, debug=True):
-        """Compute the loss with TD learning."""
-        states, (beta_indices, ws), rewards, next_states, dones = sample
+        """Compute the loss with TD learning for the FixedW (discrete β) model."""
+        # Unpack; we ignore ws for FixedW
+        states, (beta_indices, _ws), rewards, next_states, dones = sample
 
-        states = torch.tensor(np.stack(states), dtype=torch.float32)
-        next_states = torch.tensor(np.stack(next_states), dtype=torch.float32)
+        device = next(self.policy_model.parameters()).device
+        B = len(states)
 
-        # beta_indices shape: (B,)
-        beta_indices = torch.tensor(beta_indices, dtype=torch.long).reshape(-1)
-        ws = torch.tensor(np.stack(ws), dtype=torch.float32)  # (B, J, N)
+        # ---- Tensors ----
+        states      = torch.as_tensor(np.stack(states),      dtype=torch.float32, device=device)
+        next_states = torch.as_tensor(np.stack(next_states), dtype=torch.float32, device=device)
 
-        rewards = torch.tensor(np.array(rewards), dtype=torch.float32).unsqueeze(1)
-        dones = torch.tensor(np.array(dones), dtype=torch.float32).unsqueeze(1)
+        # Make beta_indices a flat (B,) Long tensor
+        # If your buffer stores shape (B,1) arrays, this still works.
+        beta_indices = torch.as_tensor(beta_indices, dtype=torch.long, device=device).view(-1)
 
-        self.logger.debug(
-            f"States shape: {states.shape}, Next States shape: {next_states.shape}"
-        )
-        self.logger.debug(
-            f"Beta indices shape: {beta_indices.shape}, W shape: {ws.shape}"
-        )
-        self.logger.debug(f"Rewards shape: {rewards.shape}, Dones shape: {dones.shape}")
+        rewards = torch.as_tensor(rewards, dtype=torch.float32, device=device).view(B, 1)
+        dones   = torch.as_tensor(dones,   dtype=torch.float32, device=device).view(B, 1)
 
+        # ---- Q(s, β) from policy model ----
         self.policy_model.train()
-        abc_model = self.policy_model(states)
-        # shapes: A_diag: (B, J, N), b: (B, J, N), c: (B, J)
-        A_diag = abc_model["A_diag"]
-        b = abc_model["b"]
-        c = abc_model["c"]
-        self.logger.debug(
-            f"A_diag shape: {A_diag.shape}, b shape: {b.shape}, c shape: {c.shape}"
-        )
+        q = self.policy_model(states)["c"]               # (B, J)
+        q_sa = q.gather(1, beta_indices.unsqueeze(1))    # (B, 1)
 
-        assert ws.shape == A_diag.shape, f"ws: {ws.shape}, A_diag: {A_diag.shape}"
+        # ---- Double DQN target: use online net to select, target net to evaluate ----
+        with torch.no_grad():
+            q_next_online = self.policy_model(next_states)["c"]           # (B, J)
+            next_beta_idx = q_next_online.argmax(dim=1, keepdim=True)     # (B, 1)
 
-        q_values = self.policy_model.compute_q_values(ws, A_diag, b, c)  # (B, J)
+            q_next_target = self.target_model(next_states)["c"]           # (B, J)
+            max_next_q    = q_next_target.gather(1, next_beta_idx)        # (B, 1)
 
-        # Gather Q-values at the chosen beta index for each sample
+            target = rewards + self.gamma * (1.0 - dones) * max_next_q    # (B, 1)
 
-        selected_q_value = torch.gather(
-            q_values, dim=1, index=beta_indices.unsqueeze(1)
-        )  # (B, 1)
+        # ---- Loss & step ----
+        # Huber is typically more stable than MSE for Q-learning
+        loss = F.smooth_l1_loss(q_sa, target)
 
-        # Next state values
-        abc_model_target = self.target_model(next_states)
-        A_diag_target = abc_model_target["A_diag"]
-        b_target = abc_model_target["b"]
-        c_target = abc_model_target["c"]
-        w_star_next = self.target_model.compute_w_star(A_diag_target, b_target)
-        next_q_values = self.target_model.compute_q_values(
-            w_star_next, A_diag_target, b_target, c_target
-        )  # (B, J)
-        max_next_q, _ = next_q_values.max(dim=1, keepdim=True)  # shape: (B, 1)
-
-        expected_q_value = rewards + self.gamma * max_next_q * (1 - dones)
-
-        assert (
-            selected_q_value.shape == expected_q_value.shape == (states.shape[0], 1)
-        ), f"Shape mismatch: selected_q={selected_q_value.shape}, expected_q={expected_q_value.shape}"
-
-        loss = F.mse_loss(selected_q_value, expected_q_value)
         self.optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.policy_model.parameters(), 10.0)
         self.optimizer.step()
 
-        return loss.item()
+        return float(loss.item())
 
     def train(self, train_epochs: int) -> True:
         """The main call for the training loop of the DQN Agent.
