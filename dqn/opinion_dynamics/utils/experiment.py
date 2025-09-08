@@ -256,7 +256,7 @@ class EnvironmentFactory:
             "bidirectional_prob": 0.1,
             "max_steps": 50,
             "opinion_end_tolerance": 0.05,
-            "control_beta": 1,
+            "control_beta": 0.5,
             "normalize_reward": True,
             "terminal_reward": 0.5,
             "terminate_when_converged": False,

@@ -3,10 +3,10 @@ pip install git+https://github.com/mariusdgm/liftoff.git@windows-compatibility#e
 ```
 
 ```
-liftoff-prepare configs --runs-no 3 --do
+liftoff-prepare configs --runs-no 2 --do
 ```
 
 ```
-liftoff training_opinion.py .\results\2025Aug29-225628_configs --procs-no 4
+liftoff training_opinion.py .\results\2025Sep08-142952_configs --procs-no 4
 ```
 
