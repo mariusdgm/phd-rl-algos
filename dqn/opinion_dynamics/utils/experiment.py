@@ -11,23 +11,9 @@ import pandas as pd
 from pathlib import Path
 from typing import Dict
 
-from rl_envs_forge.envs.network_graph.network_graph import NetworkGraph
+from dqn.opinion_dynamics.opinion_dqn import AgentDQN
+from dqn.opinion_dynamics.utils.my_logging import setup_logger
 
-
-def seed_everything(seed):
-    """
-    Set the seed on everything I can think of.
-    Hopefully this should ensure reproducibility.
-
-    Credits: Florin
-    """
-    random.seed(seed)
-    os.environ["PYTHONHASHSEED"] = str(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = True
 
 
 def create_path_to_experiment_folder(
@@ -191,139 +177,35 @@ def create_adjacency_matrix_from_links(num_nodes, links):
     return adjacency_matrix
 
 
-### Env building code
+def instantiate_agent(exp_subdir_path: str) -> AgentDQN:
+    """
+    Instantiate an AgentDQN using the configuration stored in a YAML file
+    in the provided experiment subdirectory. The agent is created with the
+    given training and validation environments and loads its previous state.
 
-# Small env, premade links
-# def build_environment(random_initial_opinions=False):
-#     links = [
-#         (1, 3),
-#         (3, 2),
-#         (2, 3),
-#         (2, 0),
-#         (0, 2),
-#         (1, 2),
-#         (0, 1),
-#         # (3, 4),
-#         # (4, 3)
-#     ]
-
-#     num_agents = 4
-#     connectivity_matrix = create_adjacency_matrix_from_links(num_nodes, links)
-#     # connectivity_matrix = normalize_adjacency_matrix(connectivity_matrix)
-
-#     if random_initial_opinions:
-#         initial_opinions = np.random.uniform(low=0.0, high=1.0, size=num_nodes)
-
-#     else:
-#         initial_opinions = np.linspace(0.3, 0, num_agents)
-
-#     # initial_opinions = np.linspace(0, 1, num_agents)
-
-#     # initial_opinions = (np.mod(np.arange(0, 0.1 * num_agents, 0.1), 0.9)) + 0.1
-
-#     env = NetworkGraph(
-#         connectivity_matrix=connectivity_matrix,
-#         initial_opinions=initial_opinions,
-#         max_u=0.4,
-#         budget=1000.0,
-#         desired_opinion=1,
-#         tau=0.1,
-#         max_steps=50,
-#         opinion_end_tolerance=0.05,
-#         control_beta=0.4,
-#         normalize_reward=True,
-#         terminal_reward=0.5
-#     )
-
-#     env.reset()
-
-#     return env
+    Args:
+        exp_subdir_path (str): Path to the experiment subdirectory containing the config YAML and checkpoint files.
 
 
-class EnvironmentFactory:
-    def __init__(self):
-        """
-        Initializes the environment factory with a base configuration.
-        """
-        self.base_config = {
-            "num_agents": 20,
-            "max_u": 0.4,
-            "budget": 1000.0,
-            "desired_opinion": 1.0,
-            "t_campaign": 1.0,
-            "t_s": 0.1,
-            "connection_prob_range": (0.05, 0.1),
-            "bidirectional_prob": 0.1,
-            "max_steps": 50,
-            "opinion_end_tolerance": 0.05,
-            "control_beta": 0.5,
-            "normalize_reward": True,
-            "terminal_reward": 0.5,
-            "terminate_when_converged": False,
-            "dynamics_model": "coca",  # or "laplacian"
-            "seed": 42,
-        }
-        
-        self.validation_versions = [0, 1, 2]
+    Returns:
+        AgentDQN: An instance of AgentDQN initialized using the experiment configuration and saved state.
+    """
+    # Assume the YAML configuration is stored as 'config.yaml' in the experiment folder.
+    config_path = os.path.join(exp_subdir_path, "cfg.yaml")
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Config file not found at {config_path}")
 
-    def get_randomized_env(self, seed: int = None):
-        """Returns a training environment with randomized opinions and optional seed."""
-        config = self.base_config.copy()
-        if seed is not None:
-            config["seed"] = seed
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
 
-        num_agents = config["num_agents"]
-        initial_opinions = np.random.uniform(low=0.1, high=0.99, size=num_agents)
-        config["initial_opinions"] = initial_opinions
-
-        return NetworkGraph(**config)
-
-    def get_validation_env(self, version: int = 0):
-        """Returns a validation environment with controlled variation by version."""
-        config = self.base_config.copy()
-        num_agents = config["num_agents"]
-
-        if version == 0:
-            config["initial_opinions"] = np.linspace(0.3, 0.1, num_agents)
-        elif version == 1:
-            config["initial_opinions"] = np.linspace(0.4, 0.6, num_agents)
-        elif version == 2:
-            config["initial_opinions"] = np.linspace(0.1, 0.7, num_agents)
-        else:
-            raise ValueError(f"Unknown validation version: {version}")
-
-        return NetworkGraph(**config)
-    
-def build_environment(random_initial_opinions=False):
-
-    num_agents = 20
-
-    if random_initial_opinions:
-        initial_opinions = np.random.uniform(low=0.1, high=0.99, size=num_agents)
-
-    else:
-        initial_opinions = np.linspace(0.3, 0.1, num_agents)
-
-    env = NetworkGraph(
-        num_agents=num_agents,
-        initial_opinions=initial_opinions,
-        max_u=0.4,
-        budget=1000.0,
-        desired_opinion=1,
-        t_campaign=1,
-        t_s=0.1,
-        connection_prob_range=(0.05, 0.1),
-        bidirectional_prob=0.1,
-        max_steps=50,
-        opinion_end_tolerance=0.05,
-        control_beta=0.4,
-        normalize_reward=True,
-        terminal_reward=0.5,
-        seed=42,
-        terminate_when_converged=False,
-        dynamics_model="coca",
-        # dynamics_model="laplacian",
+    # Instantiate the agent.
+    # The resume_training_path is set to the experiment folder so that the agent loads saved weights/stats.
+    agent = AgentDQN(
+        resume_training_path=exp_subdir_path,
+        experiment_name=config["experiment"],
+        config=config,
+        save_checkpoints=False,  # you can set this as needed
+        logger=setup_logger("dqn"),
     )
 
-    env.reset()
-    return env
+    return agent
