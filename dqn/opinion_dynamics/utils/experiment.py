@@ -1,6 +1,14 @@
-import os
+import os, sys
 
-import random
+def get_dir_n_levels_up(path, n):
+    # Go up n levels from the given path
+    for _ in range(n):
+        path = os.path.dirname(path)
+    return path
+
+proj_root = get_dir_n_levels_up(os.path.abspath("__file__"), 4)
+sys.path.append(proj_root)
+
 import torch
 import yaml
 import datetime
@@ -13,7 +21,6 @@ from typing import Dict
 
 from dqn.opinion_dynamics.opinion_dqn import AgentDQN
 from dqn.opinion_dynamics.utils.my_logging import setup_logger
-
 
 
 def create_path_to_experiment_folder(

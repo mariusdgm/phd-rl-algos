@@ -26,11 +26,11 @@ import torch.nn.functional as F
 
 
 from opinion_dynamics.replay_buffer import ReplayBuffer
+from opinion_dynamics.models import OpinionNet
+from opinion_dynamics.experiments.algos import centrality_based_continuous_control
 from opinion_dynamics.utils.my_logging import setup_logger
 from opinion_dynamics.utils.generic import replace_keys, seed_everything
 from opinion_dynamics.utils.env_setup import EnvironmentFactory
-from opinion_dynamics.models import OpinionNet
-from opinion_dynamics.experiments.algos import centrality_based_continuous_control
 
 
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
