@@ -16,7 +16,7 @@ class EnvironmentFactory:
             "t_s": 0.1,
             "connection_prob_range": (0.05, 0.1),
             "bidirectional_prob": 0.1,
-            "max_steps": 50,
+            "max_steps": 100,
             "opinion_end_tolerance": 0.05,
             "control_beta": 0.5,
             "normalize_reward": True,
@@ -27,6 +27,7 @@ class EnvironmentFactory:
         }
         
         self.validation_versions = [0, 1, 2]
+        self.use_centrality_resistance = True
 
     def get_randomized_env(self, seed: int = None):
         """Returns a training environment with randomized opinions and optional seed."""
@@ -38,7 +39,10 @@ class EnvironmentFactory:
         initial_opinions = np.random.uniform(low=0.1, high=0.99, size=num_agents)
         config["initial_opinions"] = initial_opinions
 
-        return NetworkGraph(**config)
+        env = NetworkGraph(**config)
+        if self.use_centrality_resistance:
+            self.apply_centrality_based_control_resistance(env)
+        return env
 
     def get_validation_env(self, version: int = 0):
         """Returns a validation environment with controlled variation by version."""
@@ -54,7 +58,33 @@ class EnvironmentFactory:
         else:
             raise ValueError(f"Unknown validation version: {version}")
 
-        return NetworkGraph(**config)
+        env = NetworkGraph(**config)
+        if self.use_centrality_resistance:
+            self.apply_centrality_based_control_resistance(env)
+        return env
+    
+    def apply_centrality_based_control_resistance(
+        self,
+        env: NetworkGraph,
+        low: float = 0.0,   # M (assigned to lowest centrality)
+        high: float = 1.0,  # N (assigned to highest centrality)
+    ) -> NetworkGraph:
+        """
+        Linearly maps node centralities to control_resistance in [low, high].
+        Lowest centrality -> low (M), highest centrality -> high (N).
+        """
+        c = np.asarray(env.centralities, dtype=float)
+        c_min, c_max = float(c.min()), float(c.max())
+
+        if c_max - c_min < 1e-12:
+            # All nodes have (almost) identical centrality.
+            # Put them in the middle of [low, high].
+            scaled = np.full_like(c, 0.5)
+        else:
+            scaled = (c - c_min) / (c_max - c_min)  # in [0,1]
+
+        env.control_resistance = low + scaled * (high - low)
+        return env
     
 def build_environment(random_initial_opinions=False):
 
