@@ -21,13 +21,13 @@ class EnvironmentFactory:
             "control_beta": 0.5,
             "normalize_reward": True,
             "terminal_reward": 0.5,
-            "terminate_when_converged": False,
-            "dynamics_model": "coca",  # or "laplacian"
+            "terminate_when_converged": True,
+            "dynamics_model": "laplacian",  # or "laplacian"
             "seed": 42,
         }
         
+        self.use_centrality_resistance = False
         self.validation_versions = [0, 1, 2]
-        self.use_centrality_resistance = True
 
     def get_randomized_env(self, seed: int = None):
         """Returns a training environment with randomized opinions and optional seed."""
@@ -85,40 +85,41 @@ class EnvironmentFactory:
 
         env.control_resistance = low + scaled * (high - low)
         return env
-    
-def build_environment(random_initial_opinions=False):
 
-    num_agents = 20
+# Prefer the EnvironmentFactory as single source of truth
+# def build_environment(random_initial_opinions=False):
 
-    if random_initial_opinions:
-        initial_opinions = np.random.uniform(low=0.1, high=0.99, size=num_agents)
+#     num_agents = 20
 
-    else:
-        initial_opinions = np.linspace(0.3, 0.1, num_agents)
+#     if random_initial_opinions:
+#         initial_opinions = np.random.uniform(low=0.1, high=0.99, size=num_agents)
 
-    env = NetworkGraph(
-        num_agents=num_agents,
-        initial_opinions=initial_opinions,
-        max_u=0.4,
-        budget=1000.0,
-        desired_opinion=1,
-        t_campaign=1,
-        t_s=0.1,
-        connection_prob_range=(0.05, 0.1),
-        bidirectional_prob=0.1,
-        max_steps=50,
-        opinion_end_tolerance=0.05,
-        control_beta=0.4,
-        normalize_reward=True,
-        terminal_reward=0.5,
-        seed=42,
-        terminate_when_converged=False,
-        dynamics_model="coca",
-        # dynamics_model="laplacian",
-    )
+#     else:
+#         initial_opinions = np.linspace(0.3, 0.1, num_agents)
 
-    env.reset()
-    return env
+#     env = NetworkGraph(
+#         num_agents=num_agents,
+#         initial_opinions=initial_opinions,
+#         max_u=0.4,
+#         budget=1000.0,
+#         desired_opinion=1,
+#         t_campaign=1,
+#         t_s=0.1,
+#         connection_prob_range=(0.05, 0.1),
+#         bidirectional_prob=0.1,
+#         max_steps=50,
+#         opinion_end_tolerance=0.05,
+#         control_beta=0.4,
+#         normalize_reward=True,
+#         terminal_reward=0.5,
+#         seed=42,
+#         terminate_when_converged=False,
+#         dynamics_model="coca",
+#         # dynamics_model="laplacian",
+#     )
+
+#     env.reset()
+#     return env
 
 # Small env, premade links
 # def build_environment(random_initial_opinions=False):
