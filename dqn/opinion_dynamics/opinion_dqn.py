@@ -223,7 +223,7 @@ class AgentDQN:
         self.train_step_cnt = agent_params.get("train_step_cnt", 200_000)
         self.validation_enabled = agent_params.get("validation_enabled", True)
         self.validation_step_cnt = agent_params.get("validation_step_cnt", 100_000)
-        self.validation_epsilon = agent_params.get("validation_epsilon", 0.001)
+        self.validation_epsilon = agent_params.get("validation_epsilon", 0.0)
 
         self.replay_start_size = agent_params.get("replay_start_size", 5_000)
 
@@ -232,8 +232,9 @@ class AgentDQN:
         self.target_model_update_freq = agent_params.get(
             "target_model_update_freq", 100
         )
+        self.tau = agent_params.get("target_soft_tau", 0.005)
         self.gamma = agent_params.get("gamma", 0.99)
-        self.loss_function = agent_params.get("loss_fcn", "mse_loss")
+        # self.loss_function = agent_params.get("loss_fcn", "mse_loss")
 
         self.action_w_noise_amplitude = agent_params.get(
             "action_w_noise_amplitude", 0.3
@@ -313,6 +314,8 @@ class AgentDQN:
                 nr_betas=len(self.betas),
                 **estimator_settings["args"],
             )
+            self.policy_model.train()
+            self.target_model.eval()
             # initialize_network_to_match_policy(self.policy_model, self.train_env, available_budget=2.0)
             # initialize_network_to_match_policy(self.target_model, self.validation_env, available_budget=2.0)
             
@@ -327,6 +330,15 @@ class AgentDQN:
         
         self.logger.info("Initialized networks and optimizer.")
 
+    @torch.no_grad()
+    def _soft_update(self, tau: float = 0.005):
+        # EMA for parameters
+        for tp, sp in zip(self.target_model.parameters(), self.policy_model.parameters()):
+            tp.data.lerp_(sp.data, tau)
+        # Direct copy for buffers (e.g., BatchNorm running stats)
+        for tb, sb in zip(self.target_model.buffers(), self.policy_model.buffers()):
+            tb.copy_(sb)
+        
     def _make_train_env(self):
         return self.env_factory.get_randomized_env()
     
@@ -371,7 +383,7 @@ class AgentDQN:
         self.policy_model.load_state_dict(checkpoint["policy_model_state_dict"])
         self.policy_model.train()
         self.target_model.load_state_dict(checkpoint["target_model_state_dict"])
-        self.target_model.train()
+        self.target_model.eval()
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
     def load_training_stats(self, training_stats_file):
@@ -600,70 +612,62 @@ class AgentDQN:
             )
                
     def model_learn(self, sample, debug=True):
-        """Compute the loss with TD learning."""
+        """TD learning with Double DQN targets, Huber loss, grad clipping, and soft target updates."""
+        # Unpack
         states, (beta_indices, ws), rewards, next_states, dones = sample
 
-        states = torch.tensor(np.stack(states), dtype=torch.float32)
-        next_states = torch.tensor(np.stack(next_states), dtype=torch.float32)
+        device = next(self.policy_model.parameters()).device
+        B = len(states)
 
-        # beta_indices shape: (B,)
-        beta_indices = torch.tensor(beta_indices, dtype=torch.long).reshape(-1)
-        ws = torch.tensor(np.stack(ws), dtype=torch.float32)  # (B, J, N)
+        # Tensors
+        states      = torch.as_tensor(np.stack(states),      dtype=torch.float32, device=device)
+        next_states = torch.as_tensor(np.stack(next_states), dtype=torch.float32, device=device)
+        beta_indices = torch.as_tensor(beta_indices, dtype=torch.long,  device=device).view(-1)   # (B,)
+        ws          = torch.as_tensor(np.stack(ws), dtype=torch.float32, device=device)           # (B, J, N)
+        rewards     = torch.as_tensor(rewards, dtype=torch.float32, device=device).view(B, 1)
+        dones       = torch.as_tensor(dones,   dtype=torch.float32, device=device).view(B, 1)
 
-        rewards = torch.tensor(np.array(rewards), dtype=torch.float32).unsqueeze(1)
-        dones = torch.tensor(np.array(dones), dtype=torch.float32).unsqueeze(1)
-
-        self.logger.debug(
-            f"States shape: {states.shape}, Next States shape: {next_states.shape}"
-        )
-        self.logger.debug(
-            f"Beta indices shape: {beta_indices.shape}, W shape: {ws.shape}"
-        )
-        self.logger.debug(f"Rewards shape: {rewards.shape}, Dones shape: {dones.shape}")
-
+        # ---- Q(s, β) using the *online* network ----
         self.policy_model.train()
-        abc_model = self.policy_model(states)
-        # shapes: A_diag: (B, J, N), b: (B, J, N), c: (B, J)
-        A_diag = abc_model["A_diag"]
-        b = abc_model["b"]
-        c = abc_model["c"]
-        self.logger.debug(
-            f"A_diag shape: {A_diag.shape}, b shape: {b.shape}, c shape: {c.shape}"
-        )
+        abc = self.policy_model(states)
+        A_diag, b, c = abc["A_diag"], abc["b"], abc["c"]           # A_diag/b: (B, J, N), c: (B, J)
 
+        # Q(s,β) evaluated at the stored ws (shape must match A_diag/b)
         assert ws.shape == A_diag.shape, f"ws: {ws.shape}, A_diag: {A_diag.shape}"
-
         q_values = self.policy_model.compute_q_values(ws, A_diag, b, c)  # (B, J)
 
-        # Gather Q-values at the chosen beta index for each sample
+        # Gather Q(s, β_taken)
+        q_sa = q_values.gather(1, beta_indices.unsqueeze(1))  # (B, 1)
 
-        selected_q_value = torch.gather(
-            q_values, dim=1, index=beta_indices.unsqueeze(1)
-        )  # (B, 1)
+        # ---- Double DQN target ----
+        with torch.no_grad():
+            # Online net selects β' on next state
+            abc_next_online = self.policy_model(next_states)
+            A_do, b_o, c_o  = abc_next_online["A_diag"], abc_next_online["b"], abc_next_online["c"]
+            w_star_next_online = self.policy_model.compute_w_star(A_do, b_o)
+            q_next_online = self.policy_model.compute_q_values(w_star_next_online, A_do, b_o, c_o)  # (B, J)
+            next_beta_idx = q_next_online.argmax(dim=1, keepdim=True)                               # (B, 1)
 
-        # Next state values
-        abc_model_target = self.target_model(next_states)
-        A_diag_target = abc_model_target["A_diag"]
-        b_target = abc_model_target["b"]
-        c_target = abc_model_target["c"]
-        w_star_next = self.target_model.compute_w_star(A_diag_target, b_target)
-        next_q_values = self.target_model.compute_q_values(
-            w_star_next, A_diag_target, b_target, c_target
-        )  # (B, J)
-        max_next_q, _ = next_q_values.max(dim=1, keepdim=True)  # shape: (B, 1)
+            # Target net evaluates that choice
+            abc_next_tgt = self.target_model(next_states)
+            A_dt, b_t, c_t = abc_next_tgt["A_diag"], abc_next_tgt["b"], abc_next_tgt["c"]
+            w_star_next_tgt = self.target_model.compute_w_star(A_dt, b_t)
+            q_next_target = self.target_model.compute_q_values(w_star_next_tgt, A_dt, b_t, c_t)     # (B, J)
+            max_next_q = q_next_target.gather(1, next_beta_idx)                                     # (B, 1)
 
-        expected_q_value = rewards + self.gamma * max_next_q * (1 - dones)
+            target = rewards + self.gamma * (1.0 - dones) * max_next_q                              # (B, 1)
 
-        assert (
-            selected_q_value.shape == expected_q_value.shape == (states.shape[0], 1)
-        ), f"Shape mismatch: selected_q={selected_q_value.shape}, expected_q={expected_q_value.shape}"
-
-        loss = F.mse_loss(selected_q_value, expected_q_value)
+        # ---- Loss & optimization ----
+        loss = F.smooth_l1_loss(q_sa, target)           # Huber
         self.optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.policy_model.parameters(), 10.0)
         self.optimizer.step()
 
-        return loss.item()
+        # ---- Gentler target updates (Polyak) ----
+        self._soft_update(tau=0.005)
+
+        return float(loss.item())
     
     
 
@@ -812,9 +816,10 @@ class AgentDQN:
             )
 
             self.logger.debug(f"State (s') shape after step: {s_prime.shape}")
-
+        
+            done_flag = bool(is_terminated or truncated)
             self.replay_buffer.append(
-                self.train_env_s, (beta_idx, w), reward, s_prime, is_terminated
+                self.train_env_s, (beta_idx, w), reward, s_prime, done_flag
             )
             self.max_qs.append(max_q)
 
@@ -830,13 +835,14 @@ class AgentDQN:
                     self.policy_model_update_counter += 1
                     policy_trained_times += 1
 
-                if (
-                    self.policy_model_update_counter > 0
-                    and self.policy_model_update_counter % self.target_model_update_freq
-                    == 0
-                ):
-                    self.target_model.load_state_dict(self.policy_model.state_dict())
-                    target_trained_times += 1
+                # Disabled target model update because we do soft updates
+                # if (
+                #     self.policy_model_update_counter > 0
+                #     and self.policy_model_update_counter % self.target_model_update_freq
+                #     == 0
+                # ):
+                #     self.target_model.load_state_dict(self.policy_model.state_dict())
+                #     target_trained_times += 1
 
             self.current_episode_reward += reward
             self.current_episode_discounted_reward += self.discount_factor * reward

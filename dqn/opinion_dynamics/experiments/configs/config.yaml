@@ -3,8 +3,8 @@ experiment: ["opinion_agent_dqn_fixed_steps"]
 agent_params:
   model: [OpinionNetCommonAB]
 
-  args_:
-    betas: [[0, 1, 2]]
+  # args_:
+  #   betas: [[0, 1, 2]]
 
 optim:
   args_:

@@ -1,6 +1,6 @@
 experiment: "opinion_agent_dqn"
 
-epochs_to_train: 35
+epochs_to_train: 15
 environment: [opinion_net]
 
 agent_params:
@@ -9,13 +9,14 @@ agent_params:
     train_step_cnt: 200_000
     validation_enabled: True
     validation_step_cnt: 1000
-    validation_epsilon: 0.001
+    validation_epsilon: 0
+
     replay_start_size: 5_000
-    
     batch_size: 64
     training_freq: 4
-    target_model_update_freq: 1000
-    loss_fcn: mse_loss
+    
+    target_model_update_freq: 1_000
+    target_soft_tau: 0.005
 
     action_w_noise_amplitude: 0.3
 
@@ -24,8 +25,8 @@ agent_params:
 
     epsilon:
       start: 1.0
-      end: 0.05
-      decay: 7_000_000
+      end: 0.02
+      decay: 3_000_000
 
 estimator:
   model: OpinionNet
@@ -35,7 +36,7 @@ estimator:
 optim:
   name: Adam
   args_:
-    lr: 0.00001
+    lr: 0.00003 
     eps: 0.00000001
     betas: [0.9, 0.999]
     weight_decay: 0
