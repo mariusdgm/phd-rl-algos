@@ -144,7 +144,14 @@ class AgentDQN:
         self.t = 0  # frame nr
         self.episodes = 0  # episode nr
         self.policy_model_update_counter = 0
-
+        
+        self.log_stride = 20_000  # change to taste (e.g., 5_000 if debugging)
+        
+        # Metrics to track training progress
+        self._last_entropy = None
+        self._last_frac_over_cap = None
+        self._last_rel_target_drift = None
+        
         self.reset_training_episode_tracker()
 
         self.training_stats = []
@@ -153,6 +160,9 @@ class AgentDQN:
         # check that all paths were provided and that the files can be found
         if resume_training_path:
             self.load_training_state(resume_training_path)
+
+    def _should_log(self):
+        return (self.t % self.log_stride) == 0 and self.t > 0
 
     def _make_model_checkpoint_file_path(self, experiment_output_folder, epoch_cnt=0):
         """Dynamically build the path where to save the model checkpoint."""
@@ -332,10 +342,22 @@ class AgentDQN:
 
     @torch.no_grad()
     def _soft_update(self, tau: float = 0.005):
+        # measure drift BEFORE update (occasionally)
+        if self._should_log():
+            try:
+                num, den = 0.0, 1e-12
+                for tp, sp in zip(self.target_model.parameters(), self.policy_model.parameters()):
+                    num += (tp.data - sp.data).pow(2).sum().item()
+                    den += sp.data.pow(2).sum().item()
+                rel_dist = (num ** 0.5) / (den ** 0.5)
+                self._last_rel_target_drift = rel_dist
+                self.logger.info(f"target_drift@t={self.t} | ||t-s||/||s||={rel_dist:.3e} | tau={tau}")
+            except Exception as e:
+                self.logger.debug(f"[drift-log-skip] {e}")
+                
         # EMA for parameters
         for tp, sp in zip(self.target_model.parameters(), self.policy_model.parameters()):
             tp.data.lerp_(sp.data, tau)
-        # Direct copy for buffers (e.g., BatchNorm running stats)
         for tb, sb in zip(self.target_model.buffers(), self.policy_model.buffers()):
             tb.copy_(sb)
         
@@ -656,17 +678,123 @@ class AgentDQN:
             max_next_q = q_next_target.gather(1, next_beta_idx)                                     # (B, 1)
 
             target = rewards + self.gamma * (1.0 - dones) * max_next_q                              # (B, 1)
-
+            
+            # Clamp targets
+            with torch.no_grad():
+                target = target.clamp(-200.0, 200.0)
+                
+        if self._should_log():
+            try:
+                with torch.no_grad():
+                    td      = (target - q_sa)                    # (B,1)
+                    td_abs  = td.abs()
+                    qsa_m   = q_sa.mean().item()
+                    tgt_m   = target.mean().item()
+                    td_m    = td.mean().item()
+                    # p95 robust stat
+                    k = max(1, int(0.95 * td_abs.numel()))
+                    td_p95  = td_abs.kthvalue(k)[0].item()
+                    A_min   = A_diag.min().item()
+                    A_max   = A_diag.max().item()
+                    b_mean  = b.abs().mean().item()
+                    c_mean  = c.abs().mean().item()
+                    clamp_p = (target.abs() >= 200.0).float().mean().item()
+                self.logger.info(
+                    f"learn@t={self.t} | q_sa={qsa_m:.3g} | tgt={tgt_m:.3g} "
+                    f"| td={td_m:.3g} | |td|_p95={td_p95:.3g} "
+                    f"| A[min,max]=[{A_min:.3g},{A_max:.3g}] | |b|_mean={b_mean:.3g} | |c|_mean={c_mean:.3g} "
+                    f"| clamp%={clamp_p*100:.2f}"
+                )
+            except Exception as e:
+                self.logger.debug(f"[learn-log-skip] {e}")
+                
         # ---- Loss & optimization ----
         loss = F.smooth_l1_loss(q_sa, target)           # Huber
         self.optimizer.zero_grad()
         loss.backward()
+        
+        grad_norm_pre = None
+        nonfinite_grads = 0
+        if self._should_log():
+            try:
+                total_sq = 0.0
+                for p in self.policy_model.parameters():
+                    if p.grad is not None:
+                        g = p.grad.detach()
+                        total_sq += g.pow(2).sum().item()
+                        if not torch.isfinite(g).all():
+                            nonfinite_grads += 1
+                grad_norm_pre = total_sq ** 0.5
+            except Exception:
+                pass
+        
         torch.nn.utils.clip_grad_norm_(self.policy_model.parameters(), 10.0)
+        
+        grad_norm_post = None
+        if self._should_log():
+            try:
+                total_sq = 0.0
+                for p in self.policy_model.parameters():
+                    if p.grad is not None:
+                        total_sq += p.grad.detach().pow(2).sum().item()
+                grad_norm_post = total_sq ** 0.5
+            except Exception:
+                pass
+
+        # Current LR (first param group)
+        lr_val = None
+        if self._should_log():
+            try:
+                lr_val = self.optimizer.param_groups[0].get("lr", None)
+            except Exception:
+                pass
+
+        # Param L2 norm (for scale context)
+        param_norm = None
+        if self._should_log():
+            try:
+                with torch.no_grad():
+                    s = 0.0
+                    for p in self.policy_model.parameters():
+                        s += p.data.pow(2).sum().item()
+                    param_norm = s ** 0.5
+            except Exception:
+                pass
+
+        # Log the grad/param stats together (once per stride)
+        if self._should_log():
+            try:
+                self.logger.info(
+                    "optim@t=%d | loss=%.4g | grad||pre=%.3g | grad||post=%.3g | "
+                    "nonfinite_grads=%d | param||=%.3g | lr=%s" %
+                    (
+                        self.t,
+                        float(loss.item()),
+                        (grad_norm_pre if grad_norm_pre is not None else float('nan')),
+                        (grad_norm_post if grad_norm_post is not None else float('nan')),
+                        nonfinite_grads,
+                        (param_norm if param_norm is not None else float('nan')),
+                        (f"{lr_val:.3g}" if isinstance(lr_val, float) else str(lr_val)),
+                    )
+                )
+            except Exception:
+                pass
+        
         self.optimizer.step()
 
         # ---- Gentler target updates (Polyak) ----
         self._soft_update(tau=0.005)
 
+        # Post-step sanity check for non-finite params (rare, but helpful)
+        if self._should_log():
+            try:
+                for name, p in self.policy_model.named_parameters():
+                    if torch.isnan(p).any() or torch.isinf(p).any():
+                        self.logger.info(f"[WARN] non-finite param in {name} @ t={self.t}")
+                        break
+            except Exception:
+                pass
+    
         return float(loss.item())
     
     
@@ -805,11 +933,39 @@ class AgentDQN:
                 epsilon=self.epsilon_by_frame(self.t),
             )
             action = np.squeeze(action)
+            
+            if self._should_log():
+                try:
+                    # action is (N,)
+                    act = torch.tensor(action, dtype=torch.float32)
+                    frac_over_cap = (act > 0.4).float().mean().item()
+                    topk_vals, _ = torch.topk(act, k=min(3, act.numel()))
+                    # Pull chosen w "logits" for entropy proxy
+                    bidx = int(np.asarray(beta_idx).reshape(-1)[0])
+                    w_tensor = torch.tensor(w, dtype=torch.float32)  # (1, J, N)
+                    w_chosen = w_tensor[0, bidx, :]                  # (N,)
+                    with torch.no_grad():
+                        p = torch.softmax(w_chosen, dim=-1)
+                        H = -(p * p.clamp_min(1e-8).log()).sum().item()
+                    self.logger.info(
+                        f"t={self.t} | eps={self.epsilon_by_frame(self.t):.4f} | beta_idx={bidx} "
+                        f"| action_entropy={H:.3f} | frac_u>0.4={frac_over_cap:.3f} "
+                        f"| top3_u={topk_vals.tolist()} | max_q={max_q:.3g}"
+                    )
+                    self._last_entropy = H
+                    self._last_frac_over_cap = frac_over_cap
+                    
+                except Exception as e:
+                    self.logger.debug(f"[act-log-skip] {e}")
 
             self.logger.debug(f"State shape: {self.train_env_s.shape}")
             self.logger.debug(f"Action shape: {action.shape}")
             self.logger.debug(f"Beta index: {beta_idx}")
 
+            if self._should_log():
+                if not np.isfinite(action).all():
+                    self.logger.info(f"[WARN] non-finite action at t={self.t}: {action}")
+        
             action = np.squeeze(action)
             s_prime, reward, is_terminated, truncated, info = self.train_env.step(
                 action
@@ -823,6 +979,15 @@ class AgentDQN:
             )
             self.max_qs.append(max_q)
 
+            if self._should_log():
+                try:
+                    self.logger.info(
+                        f"buffer@t={self.t} | size={len(self.replay_buffer)} | batch={self.batch_size} "
+                        f"| train_freq={self.training_freq} | gamma={self.gamma}"
+                    )
+                except Exception as e:
+                    self.logger.debug(f"[buffer-log-skip] {e}")
+        
             # Train policy model
             if (
                 self.t > self.replay_start_size
@@ -879,6 +1044,12 @@ class AgentDQN:
         self.train_env_s, _ = self.train_env.reset(randomize_opinions=True)
 
     def display_training_epoch_info(self, stats):
+        extra = (
+            f" | Entropy(last)={None if self._last_entropy is None else round(self._last_entropy,3)}"
+            f" | frac_u>0.4(last)={None if self._last_frac_over_cap is None else round(self._last_frac_over_cap,3)}"
+            f" | tgt_drift(last)={None if self._last_rel_target_drift is None else f'{self._last_rel_target_drift:.2e}'}"
+        )
+        
         self.logger.info(
             "TRAINING STATS"
             + " | Frames seen: "
@@ -897,6 +1068,7 @@ class AgentDQN:
             + str(self.epsilon_by_frame(self.t))
             + " | Train epoch time: "
             + str(stats["epoch_time"])
+            + extra
         )
 
     def compute_training_epoch_stats(

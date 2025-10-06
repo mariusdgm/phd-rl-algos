@@ -86,7 +86,8 @@ class OpinionNetCommonAB(nn.Module):
 
         # Independent c values for each beta
         c = self.predict_c(features)  # (B, J)
-
+        c = torch.tanh(c) * 100.0 # Bounding to help with stability
+        
         # print(f"A_diag shape: {A_diag.shape}, b shape: {b.shape}, c shape: {c.shape}")
         
         output = {"A_diag": A_diag, "b": b, "c": c}

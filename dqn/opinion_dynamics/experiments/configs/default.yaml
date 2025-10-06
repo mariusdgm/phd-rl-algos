@@ -16,17 +16,17 @@ agent_params:
     training_freq: 4
     
     target_model_update_freq: 1_000
-    target_soft_tau: 0.005
+    target_soft_tau: 0.001
 
     action_w_noise_amplitude: 0.3
 
     gamma: 0.99
-    betas: [2]
+    betas: [0, 1, 2]
 
     epsilon:
       start: 1.0
-      end: 0.02
-      decay: 3_000_000
+      end: 0.05
+      decay: 2_000_000
 
 estimator:
   model: OpinionNet
