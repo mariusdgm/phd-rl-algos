@@ -1,11 +1,10 @@
-experiment: ["opinion_agent_dqn_fixed_steps"]
+experiment: ["gr"]
 
 agent_params:
-  model: [OpinionNetCommonAB]
-
-  # args_:
-  #   betas: [[0, 1, 2]]
+  batch_size: [64, 128]
+  training_freq: [1, 4] 
+  target_soft_tau: [0.005, 0.01]
 
 optim:
   args_:
-    lr: [0.00001, 0.000001]
+    lr: [0.000003, 0.000010]

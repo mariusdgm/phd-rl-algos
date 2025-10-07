@@ -29,7 +29,8 @@ agent_params:
       decay: 2_000_000
 
 estimator:
-  model: OpinionNet
+  # model: OpinionNet
+  model: OpinionNetCommonAB
   args_:
     lin_hidden_size: 64
 

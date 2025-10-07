@@ -14,6 +14,7 @@ sys.path.append(proj_root)
 
 import datetime
 import torch
+import math
 import numpy as np
 from collections import defaultdict
 
@@ -83,6 +84,21 @@ def initialize_network_to_match_policy(opinion_net, env, available_budget, beta_
 
     print("OpinionNet initialized to match centrality-based policy for current state.")
     return opinion_net
+
+def robust_quantile(x: torch.Tensor, q: float) -> torch.Tensor:
+    """
+    Compute the q-quantile over all elements of x.
+    Works on older PyTorch without torch.quantile by falling back to kthvalue.
+    """
+    x = x.reshape(-1)
+    q = float(q)
+    if hasattr(torch, "quantile"):
+        return torch.quantile(x, q)
+    # Fallback: kthvalue on the flattened vector (dim=0)
+    n = x.numel()
+    # k should be 1..n; use ceil so q=0.98 picks the 98th percentile
+    k = max(1, min(n, int(math.ceil(q * n))))
+    return x.kthvalue(k, dim=0).values  # .values for newer torch; .[0] for older
 
 class AgentDQN:
     def __init__(
@@ -313,7 +329,7 @@ class AgentDQN:
         """
         estimator_settings = config.get("estimator", {"model": "Conv_QNET", "args": {}})
 
-        if estimator_settings["model"] == "OpinionNet":
+        if estimator_settings["model"] == "OpinionNet" or estimator_settings["model"] == "OpinionNetCommonAB":
             self.policy_model = OpinionNet(
                 self.in_features,
                 nr_betas=len(self.betas),
@@ -419,6 +435,10 @@ class AgentDQN:
         self.validation_stats = checkpoint["validation_stats"]
 
     def save_checkpoint(self):
+        if not (self.experiment_output_folder and self.experiment_name):
+            self.logger.warning("Skipping checkpoint: missing experiment paths.")
+            return
+
         self.logger.info(f"Saving checkpoint at t = {self.t} ...")
         self.save_model()
         self.save_training_status()
@@ -576,7 +596,8 @@ class AgentDQN:
             assert w_star.shape == (B, J, N), f"w_star shape mismatch: {w_star.shape}"
             assert q_values.shape == (B, J), f"q_values shape mismatch: {q_values.shape}"
 
-            noise_amplitude = self.action_w_noise_amplitude * epsilon
+            eps = 0.0 if epsilon is None else float(epsilon)
+            noise_amplitude = self.action_w_noise_amplitude * eps
 
             # === RANDOM ACTION BRANCH ===
             if random_action or (epsilon is not None and np.random.rand() < epsilon):
@@ -681,7 +702,8 @@ class AgentDQN:
             
             # Clamp targets
             with torch.no_grad():
-                target = target.clamp(-200.0, 200.0)
+                clamp_val = robust_quantile(target.abs(), 0.98).item()
+                target = target.clamp(-clamp_val, clamp_val)
                 
         if self._should_log():
             try:
@@ -692,13 +714,12 @@ class AgentDQN:
                     tgt_m   = target.mean().item()
                     td_m    = td.mean().item()
                     # p95 robust stat
-                    k = max(1, int(0.95 * td_abs.numel()))
-                    td_p95  = td_abs.kthvalue(k)[0].item()
+                    td_p95 = robust_quantile(td_abs, 0.95).item()
                     A_min   = A_diag.min().item()
                     A_max   = A_diag.max().item()
                     b_mean  = b.abs().mean().item()
                     c_mean  = c.abs().mean().item()
-                    clamp_p = (target.abs() >= 200.0).float().mean().item()
+                    clamp_p = (target.abs() >= clamp_val).float().mean().item()
                 self.logger.info(
                     f"learn@t={self.t} | q_sa={qsa_m:.3g} | tgt={tgt_m:.3g} "
                     f"| td={td_m:.3g} | |td|_p95={td_p95:.3g} "
@@ -783,7 +804,7 @@ class AgentDQN:
         self.optimizer.step()
 
         # ---- Gentler target updates (Polyak) ----
-        self._soft_update(tau=0.005)
+        self._soft_update(tau=self.tau)
 
         # Post-step sanity check for non-finite params (rare, but helpful)
         if self._should_log():
