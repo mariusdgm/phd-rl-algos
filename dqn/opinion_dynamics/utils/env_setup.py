@@ -23,7 +23,7 @@ class EnvironmentFactory:
             "terminal_reward": 0.5,
             "terminate_when_converged": True,
             "dynamics_model": "coca",  # or "laplacian"
-            "seed": 42,
+            "seed": 4,
         }
         
         self.use_centrality_resistance = True

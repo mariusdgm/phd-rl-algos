@@ -357,7 +357,7 @@ class AgentDQN:
         self.logger.info("Initialized networks and optimizer.")
 
     @torch.no_grad()
-    def _soft_update(self, tau: float = 0.005):
+    def _soft_update(self, tau):
         # measure drift BEFORE update (occasionally)
         if self._should_log():
             try:
