@@ -16,7 +16,7 @@ import datetime
 import torch
 import math
 import numpy as np
-from collections import defaultdict
+from collections import defaultdict, deque
 
 from pathlib import Path
 from typing import Dict
@@ -33,6 +33,8 @@ from opinion_dynamics.utils.my_logging import setup_logger
 from opinion_dynamics.utils.generic import replace_keys, seed_everything
 from opinion_dynamics.utils.env_setup import EnvironmentFactory
 
+class EarlyStop(Exception):
+    pass
 
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 device = "cpu"
@@ -176,6 +178,8 @@ class AgentDQN:
         # check that all paths were provided and that the files can be found
         if resume_training_path:
             self.load_training_state(resume_training_path)
+            
+        self._init_early_stopping_vars()
 
     def _should_log(self):
         return (self.t % self.log_stride) == 0 and self.t > 0
@@ -248,7 +252,7 @@ class AgentDQN:
         # setup training configuration
         self.train_step_cnt = agent_params.get("train_step_cnt", 200_000)
         self.validation_enabled = agent_params.get("validation_enabled", True)
-        self.validation_step_cnt = agent_params.get("validation_step_cnt", 100_000)
+        self.validation_step_cnt = agent_params.get("validation_step_cnt", 1_000)
         self.validation_epsilon = agent_params.get("validation_epsilon", 0.0)
 
         self.replay_start_size = agent_params.get("replay_start_size", 5_000)
@@ -291,6 +295,92 @@ class AgentDQN:
         )
 
         self.logger.info("Loaded configuration settings.")
+        
+    def _init_early_stopping_vars(self):
+        # ---- Early stop: rolling metrics & thresholds tuned for your failure mode ----
+        W = 8  # rolling window (log points, not steps)
+        self._es_win = {
+            "H": deque(maxlen=W),             # action entropy
+            "frac_cap": deque(maxlen=W),      # frac_u>0.4
+            "td_p95": deque(maxlen=W),        # p95(|TD|)
+            "clamp_pct": deque(maxlen=W),     # fraction of clamped targets
+            "tgt_drift": deque(maxlen=W),     # ||target-source||/||source||
+            "max_q": deque(maxlen=W),         # mean max-Q
+        }
+
+        # Derived entropy baseline ~ uniform
+        self._H_uniform = math.log(self.num_actions) if self.num_actions > 0 else 0.0
+
+        # Tuned thresholds (conservative; trip only if several agree)
+        self._es_cfg = {
+            # action saturation / collapse
+            "min_entropy_frac": 0.15,     # H < 0.15 * log(N)
+            "high_frac_cap":    0.70,     # >70% of actions over 0.4
+            # instability / blow-up
+            "clamp_pct_high":   0.55,     # >55% clamped targets on average
+            "td_p95_jump":      2.0,      # last-half median > 2x first-half median
+            "tgt_drift_high":   0.30,     # median relative drift > 0.30
+            # patience in log points (not epochs)
+            "pat_points":       4,        # need at least this many points in window
+        }
+        
+    def _es_update(self, *, H=None, frac_cap=None, td_p95=None, clamp_pct=None, tgt_drift=None, max_q=None):
+        if H is not None:          self._es_win["H"].append(float(H))
+        if frac_cap is not None:   self._es_win["frac_cap"].append(float(frac_cap))
+        if td_p95 is not None:     self._es_win["td_p95"].append(float(td_p95))
+        if clamp_pct is not None:  self._es_win["clamp_pct"].append(float(clamp_pct))
+        if tgt_drift is not None:  self._es_win["tgt_drift"].append(float(tgt_drift))
+        if max_q is not None:      self._es_win["max_q"].append(float(max_q))
+
+    def _median(self, arr):
+        if not arr: return None
+        v = sorted(arr)
+        n = len(v)
+        return v[n//2] if n % 2 else 0.5*(v[n//2 - 1] + v[n//2])
+
+    def _es_trend_ratio(self, arr):
+        """Ratio of median(last half) / median(first half); returns None if insufficient data."""
+        if len(arr) < max(2, self._es_cfg["pat_points"]):
+            return None
+        mid = len(arr)//2
+        first = self._median(list(arr)[:mid])
+        last  = self._median(list(arr)[mid:])
+        if first is None or last is None or first <= 1e-12:
+            return None
+        return last / first
+
+    def _early_stop_maybe(self):
+        # need enough log points
+        need = self._es_cfg["pat_points"]
+        if any(len(self._es_win[k]) < need for k in self._es_win):
+            return
+
+        H_u = self._H_uniform if self._H_uniform > 0 else 1.0
+        H_med       = self._median(self._es_win["H"])
+        frac_med    = self._median(self._es_win["frac_cap"])
+        clamp_med   = self._median(self._es_win["clamp_pct"])
+        drift_med   = self._median(self._es_win["tgt_drift"])
+        td_growth   = self._es_trend_ratio(self._es_win["td_p95"])
+
+        # Signals (each boolean)
+        S_action_collapse = (H_med is not None) and (H_med < self._es_cfg["min_entropy_frac"] * H_u) \
+                            and (frac_med is not None) and (frac_med > self._es_cfg["high_frac_cap"])
+
+        S_target_instab   = (clamp_med is not None) and (clamp_med > self._es_cfg["clamp_pct_high"]) \
+                            and (td_growth is not None) and (td_growth > self._es_cfg["td_p95_jump"])
+
+        S_drift_spike     = (drift_med is not None) and (drift_med > self._es_cfg["tgt_drift_high"])
+
+        # Trip only when at least two collapse signals are ON together for sustained points
+        if sum([S_action_collapse, S_target_instab, S_drift_spike]) >= 2:
+            msg = (
+                "[EARLY STOP] Likely irrecoverable collapse:\n"
+                f"- action_collapse={S_action_collapse} (H_med={H_med:.3g}, frac_cap_med={frac_med:.3g})\n"
+                f"- target_instab={S_target_instab} (clamp_med={clamp_med:.3g}, td_growth={None if td_growth is None else round(td_growth,3)})\n"
+                f"- drift_spike={S_drift_spike} (drift_med={drift_med:.3g})"
+            )
+            self.logger.error(msg)
+            raise EarlyStop("Collapse criteria satisfied.")
 
     def _get_exp_decay_function(self, start: float, end: float, decay: float):
         return lambda x: end + (start - end) * np.exp(-1.0 * x / decay)
@@ -341,6 +431,7 @@ class AgentDQN:
                 **estimator_settings["args"],
             )
             self.policy_model.train()
+            self.target_model.load_state_dict(self.policy_model.state_dict())
             self.target_model.eval()
             # initialize_network_to_match_policy(self.policy_model, self.train_env, available_budget=2.0)
             # initialize_network_to_match_policy(self.target_model, self.validation_env, available_budget=2.0)
@@ -367,6 +458,7 @@ class AgentDQN:
                     den += sp.data.pow(2).sum().item()
                 rel_dist = (num ** 0.5) / (den ** 0.5)
                 self._last_rel_target_drift = rel_dist
+                self._es_update(tgt_drift=rel_dist)
                 self.logger.info(f"target_drift@t={self.t} | ||t-s||/||s||={rel_dist:.3e} | tau={tau}")
             except Exception as e:
                 self.logger.debug(f"[drift-log-skip] {e}")
@@ -417,7 +509,7 @@ class AgentDQN:
         
 
     def load_models(self, models_load_file):
-        checkpoint = torch.load(models_load_file, weights_only=False)
+        checkpoint = torch.load(models_load_file, map_location=device, weights_only=False)
         self.policy_model.load_state_dict(checkpoint["policy_model_state_dict"])
         self.policy_model.train()
         self.target_model.load_state_dict(checkpoint["target_model_state_dict"])
@@ -425,7 +517,7 @@ class AgentDQN:
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
     def load_training_stats(self, training_stats_file):
-        checkpoint = torch.load(training_stats_file, weights_only=False)
+        checkpoint = torch.load(training_stats_file, map_location=device, weights_only=False)
 
         self.t = checkpoint["frame"]
         self.episodes = checkpoint["episode"]
@@ -720,6 +812,7 @@ class AgentDQN:
                     b_mean  = b.abs().mean().item()
                     c_mean  = c.abs().mean().item()
                     clamp_p = (target.abs() >= clamp_val).float().mean().item()
+                    self._es_update(td_p95=td_p95, clamp_pct=clamp_p)
                 self.logger.info(
                     f"learn@t={self.t} | q_sa={qsa_m:.3g} | tgt={tgt_m:.3g} "
                     f"| td={td_m:.3g} | |td|_p95={td_p95:.3g} "
@@ -732,6 +825,9 @@ class AgentDQN:
         # ---- Loss & optimization ----
         loss = F.smooth_l1_loss(q_sa, target)           # Huber
         self.optimizer.zero_grad()
+        if not torch.isfinite(loss):
+            self.logger.error(f"[EARLY STOP] Non-finite loss at t={self.t}: {float(loss.item()) if loss.numel()==1 else 'tensor'}")
+            raise EarlyStop("Non-finite loss encountered.")
         loss.backward()
         
         grad_norm_pre = None
@@ -749,6 +845,13 @@ class AgentDQN:
             except Exception:
                 pass
         
+        if nonfinite_grads > 0:
+            self._nonfinite_counter += 1
+            if self._nonfinite_counter > self.nonfinite_patience:
+                raise EarlyStop("Repeated non-finite gradients.")
+        else:
+            self._nonfinite_counter = 0
+            
         torch.nn.utils.clip_grad_norm_(self.policy_model.parameters(), 10.0)
         
         grad_norm_post = None
@@ -761,7 +864,7 @@ class AgentDQN:
                 grad_norm_post = total_sq ** 0.5
             except Exception:
                 pass
-
+            
         # Current LR (first param group)
         lr_val = None
         if self._should_log():
@@ -953,7 +1056,8 @@ class AgentDQN:
                 torch.tensor(self.train_env_s, dtype=torch.float32),
                 epsilon=self.epsilon_by_frame(self.t),
             )
-            action = np.squeeze(action)
+            action = np.asarray(action, dtype=np.float32)  # (1, N)
+            action = action[0]                             # -> (N,) even when N==1
             
             if self._should_log():
                 try:
@@ -975,6 +1079,14 @@ class AgentDQN:
                     )
                     self._last_entropy = H
                     self._last_frac_over_cap = frac_over_cap
+                    self._es_update(H=H, frac_cap=frac_over_cap, max_q=max_q)
+                
+                    try:
+                        self._early_stop_maybe()
+                    except EarlyStop:
+                        raise
+                    except Exception as e:
+                        self.logger.debug(f"[es-check-skip] {e}")
                     
                 except Exception as e:
                     self.logger.debug(f"[act-log-skip] {e}")
@@ -987,7 +1099,10 @@ class AgentDQN:
                 if not np.isfinite(action).all():
                     self.logger.info(f"[WARN] non-finite action at t={self.t}: {action}")
         
-            action = np.squeeze(action)
+            assert action.ndim == 1, f"expected (N,), got {action.shape}"
+            if not np.isfinite(action).all():
+                self.logger.error(f"[EARLY STOP] Non-finite action at t={self.t}: {action}")
+                raise EarlyStop("Non-finite action encountered.")
             s_prime, reward, is_terminated, truncated, info = self.train_env.step(
                 action
             )
@@ -1263,6 +1378,9 @@ class AgentDQN:
                 torch.tensor(s, dtype=torch.float32), epsilon=self.validation_epsilon
             )
             action = np.squeeze(action)
+            if not np.isfinite(action).all():
+                self.logger.error(f"[EARLY STOP] Non-finite action at t={self.t}: {action}")
+                raise EarlyStop("Non-finite action encountered.")
             s_prime, reward, is_terminated, truncated, info = self.validation_env.step(
                 action
             )

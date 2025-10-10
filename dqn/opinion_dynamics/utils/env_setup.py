@@ -26,7 +26,7 @@ class EnvironmentFactory:
             "seed": 4,
         }
         
-        self.use_centrality_resistance = True
+        self.use_centrality_resistance = False
         self.validation_versions = [0, 1, 2]
 
     def get_randomized_env(self, seed: int = None):

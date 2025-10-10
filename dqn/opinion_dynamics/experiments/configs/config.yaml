@@ -1,6 +1,10 @@
 experiment: ["fixed"]
 
-
-optim:
+agent_params:
   args_:
-    lr: [0.000005, 0.00001, 0.00005] 
+    target_soft_tau: [0.0005, 0.001, 0.0015]
+    action_w_noise_amplitude: [0.05, 0.15, 0.3] 
+
+# optim:
+#   args_:
+#     lr: [0.00001, 0.00002] 
