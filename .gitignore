@@ -1,6 +1,7 @@
 develop.ipynb
 results
 install_all.py
+dqn/opinion_dynamics/draw_network/*.png
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

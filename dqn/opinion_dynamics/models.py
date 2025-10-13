@@ -2,48 +2,30 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from typing import Optional, Dict
 
-class OpinionNetFixedW(nn.Module):
-    def __init__(self, nr_agents, nr_betas=2, lin_hidden_size=64):
-        super(OpinionNetFixedW, self).__init__()
-
-        self.nr_agents = nr_agents
-        self.nr_betas = nr_betas  
-        self.lin_hidden_size = lin_hidden_size
-
-        self.fc = nn.Sequential(
-            nn.Linear(self.nr_agents, self.lin_hidden_size),
-            nn.ReLU(),
-            nn.Linear(self.lin_hidden_size, self.lin_hidden_size),
-            nn.ReLU(),
-        )
-
-        self.predict_c = nn.Linear(self.lin_hidden_size, self.nr_betas)
-
-        with torch.no_grad():
-            self.predict_c.bias.zero_()
-
-    def forward(self, x):
-        """
-        Args:
-            x (torch.Tensor): Input state, shape (B, N)
-        Returns:
-            dict with:
-                - c (torch.Tensor): shape (B, J)
-        """
-        features = self.fc(x)
-        c = self.predict_c(features)  # (B, J)
-        return {"c": c}
-    
+  
 class OpinionNetCommonAB(nn.Module):
-    def __init__(self, nr_agents, nr_betas=2, lin_hidden_size=64):
-        super(OpinionNetCommonAB, self).__init__()
-
+    def __init__(
+        self,
+        nr_agents: int,
+        nr_betas: int = 2,
+        lin_hidden_size: int = 64,
+        c_tanh_scale: bool = False,  
+        softplus_beta: float = 1.0,            # softness for A
+        wstar_eps: float = 1e-6,               # safety in w* division
+        return_w_star_default: bool = False,   # default for forward()
+    ):
+        super().__init__()
         self.nr_agents = nr_agents
-        self.nr_betas = nr_betas  # Number of \(\beta\) grid points
+        self.nr_betas = nr_betas
         self.lin_hidden_size = lin_hidden_size
+        self.c_tanh_scale = c_tanh_scale
+        self.softplus_beta = softplus_beta
+        self.wstar_eps = wstar_eps
+        self.return_w_star_default = return_w_star_default
 
-        # Fully connected layers for state features
+        # Trunk
         self.fc = nn.Sequential(
             nn.Linear(self.nr_agents, self.lin_hidden_size),
             nn.ReLU(),
@@ -51,148 +33,156 @@ class OpinionNetCommonAB(nn.Module):
             nn.ReLU(),
         )
 
+        # Shared A and b across betas; independent c per beta
         self.predict_shared_A_b = nn.Linear(self.lin_hidden_size, 2 * self.nr_agents)
         self.predict_c = nn.Linear(self.lin_hidden_size, self.nr_betas)
 
-        # Optional: initialize c_j biases to zero
+        # ---- init for stability ----
         with torch.no_grad():
+            # Kaiming for trunk
+            for m in self.fc:
+                if isinstance(m, nn.Linear):
+                    nn.init.kaiming_uniform_(m.weight, a=0.0, nonlinearity='relu')
+                    nn.init.zeros_(m.bias)
+
+            # Kaiming for heads
+            nn.init.kaiming_uniform_(self.predict_shared_A_b.weight, a=0.0, nonlinearity='linear')
+            nn.init.kaiming_uniform_(self.predict_c.weight, a=0.0, nonlinearity='linear')
+
+            # Biases: A ~ 1.0 after softplus, b = 0, c = 0
+            def inv_softplus(y: float, beta: float = 1.0):
+                import math
+                return math.log(math.expm1(beta * y)) / beta
+
+            a_bias = inv_softplus(1.0, beta=self.softplus_beta)
+            # Layout: [A(1..N) | b(1..N)]
+            ab_bias = torch.zeros(2 * self.nr_agents)
+            ab_bias[: self.nr_agents] = a_bias
+            self.predict_shared_A_b.bias.copy_(ab_bias)
+
             self.predict_c.bias.zero_()
 
-    def forward(self, x, w=None):
+    def forward(self, x: torch.Tensor, w: Optional[torch.Tensor] = None,
+                return_w_star: Optional[bool] = None) -> Dict[str, torch.Tensor]:
         """
-        Forward pass for the network.
-
         Args:
-            x (torch.Tensor): Input state features, shape (B, N)
-            w (torch.Tensor, optional): Optional action vector for each sample, shape (B, N)
+            x: (B, N) state features
+            w: optional actions (B, N); if given, returns q for each beta
+            return_w_star: include w_star in outputs (defaults to class setting)
 
         Returns:
             dict with:
-                - A_diag (torch.Tensor): shape (B, J, N), positive definite diagonals of A
-                - b (torch.Tensor): shape (B, J, N), linear coefficients
-                - c (torch.Tensor): shape (B, J), bias term
-                - q (torch.Tensor): shape (B, J), Q-values (only if w is provided)
+                A_diag: (B, J, N) > 0
+                b:      (B, J, N)
+                c:      (B, J)
+                q:      (B, J)      if w is provided
+                w_star: (B, J, N)   if requested
         """
-        features = self.fc(x)
+        if return_w_star is None:
+            return_w_star = self.return_w_star_default
 
-        # Shared A and b
-        A_b_shared = self.predict_shared_A_b(features)  # (B, 2N)
-        A_diag = F.softplus(A_b_shared[:, :self.nr_agents]) + 1e-6  # (B, N)
-        b = A_b_shared[:, self.nr_agents:]  # (B, N)
+        B = x.shape[0]
+        features = self.fc(x)  # (B, H)
+
+        # Shared A,b (B, 2N) -> split
+        A_b_shared = self.predict_shared_A_b(features)
+        A_raw = A_b_shared[:, : self.nr_agents]                 # (B, N)
+        b_shared = A_b_shared[:, self.nr_agents :]              # (B, N)
+
+        # Positive A diagonal + tiny eps
+        A_diag_single = F.softplus(A_raw, beta=self.softplus_beta) + 1e-6  # (B, N)
 
         # Repeat across betas
-        A_diag = A_diag.unsqueeze(1).repeat(1, self.nr_betas, 1)  # (B, J, N)
-        b = b.unsqueeze(1).repeat(1, self.nr_betas, 1)            # (B, J, N)
+        A_diag = A_diag_single.unsqueeze(1).expand(B, self.nr_betas, self.nr_agents)  # (B, J, N)
+        b = b_shared.unsqueeze(1).expand(B, self.nr_betas, self.nr_agents)            # (B, J, N)
 
-        # Independent c values for each beta
+        # Independent c per beta
         c = self.predict_c(features)  # (B, J)
-        c = torch.tanh(c) * 100.0 # Bounding to help with stability
-        
-        # print(f"A_diag shape: {A_diag.shape}, b shape: {b.shape}, c shape: {c.shape}")
-        
-        output = {"A_diag": A_diag, "b": b, "c": c}
+        if self.c_tanh_scale is not None:
+            c = torch.tanh(c) * self.c_tanh_scale  # optional clamp
 
-        # We are braodcasting w over all J levels here
+        out = {"A_diag": A_diag, "b": b, "c": c}
+
+        # Optionally compute w*
+        if return_w_star or (w is not None):
+            w_star = self.compute_w_star(A_diag, b, eps=self.wstar_eps)
+            if return_w_star:
+                out["w_star"] = w_star
+
+        # Optionally compute q(w)
         if w is not None:
-            w = w.unsqueeze(1)  # (B, 1, N)
-            q = self.compute_q_values(w, A_diag, b, c)  # (B, J)
-            output["q"] = q
+            wJ = w.unsqueeze(1).expand(B, self.nr_betas, self.nr_agents)  # (B, J, N)
+            q = self.compute_q_values(wJ, A_diag, b, c)
+            out["q"] = q
 
-        return output
-
-    @staticmethod
-    def compute_w_star(A_diag, b):
-        """
-        Compute the optimal weight allocation \( w^* \) given A_diag and b.
-
-        Args:
-            A_diag (torch.Tensor): Diagonal elements of A, shape (batch_size, nr_betas, nr_agents).
-            b (torch.Tensor): Bias term, shape (batch_size, nr_betas, nr_agents).
-
-        Returns:
-            torch.Tensor: Optimal weight allocation \( w^* \), shape (batch_size, nr_betas, nr_agents).
-        """
-        A_inv = 1.0 / A_diag  # Inverse of diagonal A
-        w = A_inv * b  # Compute raw w*
-
-        return w
+        return out
 
     @staticmethod
-    def compute_q_values(w, A_diag, b, c):
+    def compute_w_star(A_diag: torch.Tensor, b: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
         """
-        Compute Q-values using the optimal weight allocation w*.
-
-        Args:
-            w_star (torch.Tensor): Optimal weight allocation, shape (batch_size, nr_betas, nr_agents).
-            A_diag (torch.Tensor): Diagonal elements of A, shape (batch_size, nr_betas, nr_agents).
-            b (torch.Tensor): Bias term, shape (batch_size, nr_betas, nr_agents).
-            c (torch.Tensor): Free term, shape (batch_size, nr_betas).
-
-        Returns:
-            torch.Tensor: Computed Q-values, shape (batch_size, nr_betas).
+        w* = b / (A_diag + eps)
+        Shapes: A_diag, b: (B, J, N) -> (B, J, N)
         """
-        assert (
-            w.shape == A_diag.shape == b.shape
-        ), f"Shape mismatch: w_star={w.shape}, A_diag={A_diag.shape}, b={b.shape}"
-
-        # Quadratic term: w^T A w = sum_i A_i * w_i^2
-        quadratic_term = 0.5 * (A_diag * w.pow(2)).sum(dim=2)  # shape (B, J)
-
-        # Linear term: b^T w
-        linear_term = (b * w).sum(dim=2)  # shape (B, J)
-
-        # Total Q-value
-        q_values = c - quadratic_term + linear_term  # shape (B, J)
-        
-        assert q_values.shape == (w.shape[0], w.shape[1]), \
-            f"Expected shape (B, J), got {q_values.shape}"
-        
-        return q_values
+        return b / (A_diag + eps)
 
     @staticmethod
-    def apply_action_noise(w, noise_amplitude):
+    def compute_q_values(w: torch.Tensor, A_diag: torch.Tensor, b: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         """
-        Add noise to the weight vector w.
-
+        Compute Q-values for given w.
         Args:
-            w (torch.Tensor): The optimal weight vector computed from the network.
-            noise_amplitude (float): The scale of the Gaussian noise.
-
+            w:      (B, J, N)
+            A_diag: (B, J, N)
+            b:      (B, J, N)
+            c:      (B, J)
         Returns:
-            torch.Tensor: The noisy, normalized weight vector.
+            q:      (B, J)
         """
-        noise = torch.randn_like(w) * noise_amplitude
-        noisy_w = w + noise
-
-        return noisy_w
+        assert w.shape == A_diag.shape == b.shape, \
+            f"Shape mismatch: w={w.shape}, A_diag={A_diag.shape}, b={b.shape}"
+        quad = 0.5 * (A_diag * w.pow(2)).sum(dim=2)  # (B, J)
+        lin  = (b * w).sum(dim=2)                    # (B, J)
+        return c - quad + lin
 
     @staticmethod
-    def compute_action_from_w(w: torch.Tensor, beta: torch.Tensor):
-        """
-        Compute the action u from allocation weights w and beta values.
+    def apply_action_noise(w: torch.Tensor, noise_amplitude: float) -> torch.Tensor:
+        """Add Gaussian noise to w."""
+        return w + torch.randn_like(w) * noise_amplitude
 
+    @staticmethod
+    def compute_action_from_w(w: torch.Tensor, beta: torch.Tensor, max_u: Optional[float] = None) -> torch.Tensor:
+        """
+        u_i = softmax(w)_i * beta_i; optional per-element cap via max_u.
         Args:
-            w (torch.Tensor): Allocation weights, shape (batch_size, num_agents)
-            beta (torch.Tensor): Per-agent beta values, shape (batch_size, num_agents)
-            max_u (float): Maximum action value
-
-        Returns:
-            torch.Tensor: Actions u, shape (batch_size, num_agents), capped at max_u per agent
+            w:    (B, N)
+            beta: (B, N) or (1, N)
         """
-        # Softmax also normalizes
-        w = F.softmax(w, dim=-1)
-        u = w * beta 
+        w_norm = F.softmax(w, dim=-1)
+        u = w_norm * beta
+        if max_u is not None:
+            u = torch.clamp(u, max=max_u)
         return u
     
 class OpinionNet(nn.Module):
-    def __init__(self, nr_agents, nr_betas=2, lin_hidden_size=64):
-        super(OpinionNet, self).__init__()
-
+    def __init__(
+        self, 
+        nr_agents: int,
+        nr_betas: int = 2,
+        lin_hidden_size: int = 64,
+        c_tanh_scale: bool = False,  # keep None to match your winning setup
+        softplus_beta: float = 1.0,            # softness for A; leave default
+        wstar_eps: float = 1e-6,               # numerical safety for w* division
+        return_w_star_default: bool = False,   # default behavior for forward()
+        ):
+        super().__init__()
         self.nr_agents = nr_agents
-        self.nr_betas = nr_betas  # Number of \(\beta\) grid points
+        self.nr_betas = nr_betas
         self.lin_hidden_size = lin_hidden_size
+        self.c_tanh_scale = c_tanh_scale
+        self.softplus_beta = softplus_beta
+        self.wstar_eps = wstar_eps
+        self.return_w_star_default = return_w_star_default
 
-        # Fully connected layers for state features
+        # Feature trunk
         self.fc = nn.Sequential(
             nn.Linear(self.nr_agents, self.lin_hidden_size),
             nn.ReLU(),
@@ -200,133 +190,142 @@ class OpinionNet(nn.Module):
             nn.ReLU(),
         )
 
-        # Predict \( q(x, \beta; \theta), A, b \) for all \(\beta\) grid points
+        # Predict [c | A_diag(n) | b(n)] for each beta head
         self.predict_A_b_c = nn.Linear(
             self.lin_hidden_size, self.nr_betas * (2 * self.nr_agents + 1)
         )
 
+        # ---- Initialization for stability (keeps behavior similar but safer) ----
         with torch.no_grad():
-            full_bias = self.predict_A_b_c.bias  # shape: (nr_betas * (2*n + 1),)
-            block_size = 2 * self.nr_agents + 1
+            # Kaiming for weights
+            for m in self.fc:
+                if isinstance(m, nn.Linear):
+                    nn.init.kaiming_uniform_(m.weight, a=0.0, nonlinearity='relu')
+                    nn.init.zeros_(m.bias)
+
+            nn.init.kaiming_uniform_(self.predict_A_b_c.weight, a=0.0, nonlinearity='linear')
+
+            # Bias layout per beta: [c, A(1..N), b(1..N)]
+            full_bias = self.predict_A_b_c.bias  # (nr_betas * (2N+1),)
+            block = 2 * self.nr_agents + 1
+            # Softplus^{-1}(1.0) for A so softplus(bias) ~ 1 initially
+            def inv_softplus(y: float, beta: float = 1.0):
+                # inverse of softplus: x = log(exp(beta*y) - 1)/beta
+                import math
+                return math.log(math.expm1(beta * y)) / beta
+            a_bias = inv_softplus(1.0, beta=self.softplus_beta)
+
             for j in range(self.nr_betas):
-                full_bias[j * block_size] = 0.0  # Initialize c_j to 0.
+                off = j * block
+                full_bias[off + 0] = 0.0                         # c_j = 0
+                full_bias[off + 1 : off + 1 + self.nr_agents] = a_bias  # A_diag ~ 1.0
+                full_bias[off + 1 + self.nr_agents : off + block] = 0.0  # b = 0
 
-    def forward(self, x, w=None):
+    def forward(self, x: torch.Tensor, w: Optional[torch.Tensor] = None,
+                return_w_star: Optional[bool] = None) -> Dict[str, torch.Tensor]:
         """
-        Forward pass for the network.
-
         Args:
-            x (torch.Tensor): Input state features, shape (B, N)
-            w (torch.Tensor, optional): Optional action vector for each sample, shape (B, N)
+            x: (B, N) state features
+            w: optional actions (B, N); if given, returns q for each beta
+            return_w_star: if True, include w_star in output (defaults to class default)
 
-        Returns:
-            dict with:
-                - A_diag (torch.Tensor): shape (B, J, N), positive definite diagonals of A
-                - b (torch.Tensor): shape (B, J, N), linear coefficients
-                - c (torch.Tensor): shape (B, J), bias term
-                - q (torch.Tensor): shape (B, J), Q-values (only if w is provided)
+        Returns dict with:
+            A_diag: (B, J, N)  > 0
+            b:      (B, J, N)
+            c:      (B, J)
+            q:      (B, J)     only if w is provided
+            w_star: (B, J, N)  only if requested
         """
-        features = self.fc(x)
+        if return_w_star is None:
+            return_w_star = self.return_w_star_default
 
-        A_b_c_net = self.predict_A_b_c(features)
-        A_b_c_net = A_b_c_net.reshape(-1, self.nr_betas, 2 * self.nr_agents + 1)
+        B = x.shape[0]
+        features = self.fc(x)  # (B, H)
 
-        A_diag = F.softplus(A_b_c_net[:, :, 1 : self.nr_agents + 1]) + 1e-6  # (B, J, N)
-        b = A_b_c_net[:, :, self.nr_agents + 1 :]  # (B, J, N)
+        # Raw head: (B, J*(2N+1)) -> (B, J, 2N+1)
+        A_b_c_net = self.predict_A_b_c(features).reshape(
+            -1, self.nr_betas, 2 * self.nr_agents + 1
+        )
+
+        # Parse and activate
         c = A_b_c_net[:, :, 0]  # (B, J)
+        A_raw = A_b_c_net[:, :, 1 : self.nr_agents + 1]  # (B, J, N)
+        b = A_b_c_net[:, :, self.nr_agents + 1 :]        # (B, J, N)
 
-        # print(f"A_diag shape: {A_diag.shape}, b shape: {b.shape}, c shape: {c.shape}")
-        
+        # Positive diagonal via softplus
+        # softplus(x; beta) = 1/beta * log(1 + exp(beta*x))
+        A_diag = F.softplus(A_raw, beta=self.softplus_beta) + 1e-6  # (B, J, N)
+
+        # Optional stability clamp on c (OFF by default to keep your current behavior)
+        if self.c_tanh_scale is not None:
+            c = torch.tanh(c) * self.c_tanh_scale
+
         output = {"A_diag": A_diag, "b": b, "c": c}
 
-        # We are braodcasting w over all J levels here
+        # Optionally emit q(w) and/or w*
+        if return_w_star or (w is not None):
+            w_star = self.compute_w_star(A_diag, b, eps=self.wstar_eps)
+            if return_w_star:
+                output["w_star"] = w_star
+
         if w is not None:
-            w = w.unsqueeze(1)  # (B, 1, N)
-            q = self.compute_q_values(w, A_diag, b, c)  # (B, J)
+            # Broadcast w -> (B, J, N)
+            wJ = w.unsqueeze(1).expand(B, self.nr_betas, self.nr_agents)
+            q = self.compute_q_values(wJ, A_diag, b, c)
             output["q"] = q
 
         return output
 
     @staticmethod
-    def compute_w_star(A_diag, b):
+    def compute_w_star(A_diag: torch.Tensor, b: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
         """
-        Compute the optimal weight allocation \( w^* \) given A_diag and b.
-
-        Args:
-            A_diag (torch.Tensor): Diagonal elements of A, shape (batch_size, nr_betas, nr_agents).
-            b (torch.Tensor): Bias term, shape (batch_size, nr_betas, nr_agents).
-
-        Returns:
-            torch.Tensor: Optimal weight allocation \( w^* \), shape (batch_size, nr_betas, nr_agents).
+        w* = b / (A_diag + eps)
+        Shapes:
+            A_diag: (B, J, N), b: (B, J, N) -> w*: (B, J, N)
         """
-        A_inv = 1.0 / A_diag  # Inverse of diagonal A
-        w = A_inv * b  # Compute raw w*
-
-        return w
+        return b / (A_diag + eps)
 
     @staticmethod
-    def compute_q_values(w, A_diag, b, c):
+    def compute_q_values(w: torch.Tensor, A_diag: torch.Tensor, b: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         """
-        Compute Q-values using the optimal weight allocation w*.
-
+        Compute Q-values for given w.
         Args:
-            w_star (torch.Tensor): Optimal weight allocation, shape (batch_size, nr_betas, nr_agents).
-            A_diag (torch.Tensor): Diagonal elements of A, shape (batch_size, nr_betas, nr_agents).
-            b (torch.Tensor): Bias term, shape (batch_size, nr_betas, nr_agents).
-            c (torch.Tensor): Free term, shape (batch_size, nr_betas).
-
+            w:      (B, J, N)
+            A_diag: (B, J, N)
+            b:      (B, J, N)
+            c:      (B, J)
         Returns:
-            torch.Tensor: Computed Q-values, shape (batch_size, nr_betas).
+            q:      (B, J)
         """
-        assert (
-            w.shape == A_diag.shape == b.shape
-        ), f"Shape mismatch: w_star={w.shape}, A_diag={A_diag.shape}, b={b.shape}"
-
-        # Quadratic term: w^T A w = sum_i A_i * w_i^2
-        quadratic_term = 0.5 * (A_diag * w.pow(2)).sum(dim=2)  # shape (B, J)
-
-        # Linear term: b^T w
-        linear_term = (b * w).sum(dim=2)  # shape (B, J)
-
-        # Total Q-value
-        q_values = c - quadratic_term + linear_term  # shape (B, J)
-        
-        assert q_values.shape == (w.shape[0], w.shape[1]), \
-            f"Expected shape (B, J), got {q_values.shape}"
-        
-        return q_values
+        assert w.shape == A_diag.shape == b.shape, \
+            f"Shape mismatch: w={w.shape}, A_diag={A_diag.shape}, b={b.shape}"
+        quad = 0.5 * (A_diag * w.pow(2)).sum(dim=2)  # (B, J)
+        lin  = (b * w).sum(dim=2)                    # (B, J)
+        q = c - quad + lin                           # (B, J)
+        return q
 
     @staticmethod
-    def apply_action_noise(w, noise_amplitude):
+    def apply_action_noise(w: torch.Tensor, noise_amplitude: float) -> torch.Tensor:
         """
-        Add noise to the weight vector w.
-
-        Args:
-            w (torch.Tensor): The optimal weight vector computed from the network.
-            noise_amplitude (float): The scale of the Gaussian noise.
-
-        Returns:
-            torch.Tensor: The noisy, normalized weight vector.
+        Add Gaussian noise to w (no normalization here).
         """
         noise = torch.randn_like(w) * noise_amplitude
-        noisy_w = w + noise
-
-        return noisy_w
+        return w + noise
 
     @staticmethod
-    def compute_action_from_w(w: torch.Tensor, beta: torch.Tensor):
+    def compute_action_from_w(w: torch.Tensor, beta: torch.Tensor, max_u: Optional[float] = None) -> torch.Tensor:
         """
-        Compute the action u from allocation weights w and beta values.
-
+        Convert allocation weights to actions:
+            u_i = softmax(w)_i * beta_i
+        Optionally cap each u by max_u if provided.
         Args:
-            w (torch.Tensor): Allocation weights, shape (batch_size, num_agents)
-            beta (torch.Tensor): Per-agent beta values, shape (batch_size, num_agents)
-            max_u (float): Maximum action value
-
+            w:    (B, N)
+            beta: (B, N) or (1, N)
         Returns:
-            torch.Tensor: Actions u, shape (batch_size, num_agents), capped at max_u per agent
+            u:    (B, N)
         """
-        # Softmax also normalizes
-        w = F.softmax(w, dim=-1)
-        u = w * beta 
+        w_norm = F.softmax(w, dim=-1)
+        u = w_norm * beta
+        if max_u is not None:
+            u = torch.clamp(u, max=max_u)
         return u

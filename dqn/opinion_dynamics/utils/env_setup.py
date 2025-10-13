@@ -2,6 +2,7 @@ import numpy as np
 
 from rl_envs_forge.envs.network_graph.network_graph import NetworkGraph
 
+
 class EnvironmentFactory:
     def __init__(self):
         """
@@ -22,10 +23,10 @@ class EnvironmentFactory:
             "normalize_reward": True,
             "terminal_reward": 0.5,
             "terminate_when_converged": True,
-            "dynamics_model": "coca",  # or "laplacian"
-            "seed": 4,
+            "dynamics_model": "laplacian",  # or "laplacian"
+            "seed": 42,
         }
-        
+
         self.use_centrality_resistance = False
         self.validation_versions = [0, 1, 2]
 
@@ -62,12 +63,12 @@ class EnvironmentFactory:
         if self.use_centrality_resistance:
             self.apply_centrality_based_control_resistance(env)
         return env
-    
+
     def apply_centrality_based_control_resistance(
         self,
         env: NetworkGraph,
-        low: float = 0.0,   # M (assigned to lowest centrality)
-        high: float = 1.0,  # N (assigned to highest centrality)
+        low: float = 0.0,  # M (assigned to lowest centrality)
+        high: float = 0.9,  # N (assigned to highest centrality)
     ) -> NetworkGraph:
         """
         Linearly maps node centralities to control_resistance in [low, high].
@@ -85,6 +86,7 @@ class EnvironmentFactory:
 
         env.control_resistance = low + scaled * (high - low)
         return env
+
 
 # Prefer the EnvironmentFactory as single source of truth
 # def build_environment(random_initial_opinions=False):

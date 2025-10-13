@@ -1,6 +1,6 @@
 experiment: "opinion_agent_dqn"
 
-epochs_to_train: 30
+epochs_to_train: 10
 environment: [opinion_net]
 
 agent_params:
@@ -8,10 +8,10 @@ agent_params:
   args_:
     train_step_cnt: 200_000
     validation_enabled: True
-    validation_step_cnt: 1000
+    validation_step_cnt: 5_000
     validation_epsilon: 0
 
-    replay_start_size: 40_000
+    replay_start_size: 20_000
     batch_size: 64
     training_freq: 4
     
@@ -26,7 +26,7 @@ agent_params:
     epsilon:
       start: 1.0
       end: 0.05
-      decay: 4_000_000
+      decay: 1_200_000
 
 estimator:
   # model: OpinionNet

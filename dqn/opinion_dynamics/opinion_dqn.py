@@ -27,17 +27,20 @@ import torch.nn.functional as F
 
 
 from opinion_dynamics.replay_buffer import ReplayBuffer
-from opinion_dynamics.models import OpinionNet
+from opinion_dynamics.models import OpinionNet, OpinionNetCommonAB
 from opinion_dynamics.experiments.algos import centrality_based_continuous_control
 from opinion_dynamics.utils.my_logging import setup_logger
 from opinion_dynamics.utils.generic import replace_keys, seed_everything
 from opinion_dynamics.utils.env_setup import EnvironmentFactory
 
+
 class EarlyStop(Exception):
     pass
 
+
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 device = "cpu"
+
 
 def initialize_network_to_match_policy(opinion_net, env, available_budget, beta_idx=0):
     """
@@ -59,16 +62,14 @@ def initialize_network_to_match_policy(opinion_net, env, available_budget, beta_
 
         # Fix A_diag = 1.0 → b = -w_target
         A_diag_val = torch.ones(env.num_agents)
-        
+
         # TODO: need to also invert the softmax + normalize
         b_val = -torch.tensor(w_target, dtype=torch.float32)
 
         # Build the output vector for predict_A_b_c: [c, A_diag, b]
-        block = torch.cat([
-            torch.tensor([0.0]),        # c
-            A_diag_val,                # A_diag
-            b_val                      # b
-        ])  # shape: (2N + 1,)
+        block = torch.cat(
+            [torch.tensor([0.0]), A_diag_val, b_val]  # c  # A_diag  # b
+        )  # shape: (2N + 1,)
 
         # Inject this block into the layer's weight projection manually
         out_proj = opinion_net.predict_A_b_c
@@ -87,6 +88,7 @@ def initialize_network_to_match_policy(opinion_net, env, available_budget, beta_
     print("OpinionNet initialized to match centrality-based policy for current state.")
     return opinion_net
 
+
 def robust_quantile(x: torch.Tensor, q: float) -> torch.Tensor:
     """
     Compute the q-quantile over all elements of x.
@@ -101,6 +103,7 @@ def robust_quantile(x: torch.Tensor, q: float) -> torch.Tensor:
     # k should be 1..n; use ceil so q=0.98 picks the 98th percentile
     k = max(1, min(n, int(math.ceil(q * n))))
     return x.kthvalue(k, dim=0).values  # .values for newer torch; .[0] for older
+
 
 class AgentDQN:
     def __init__(
@@ -133,6 +136,9 @@ class AgentDQN:
         # assign environments
         self.save_checkpoints = save_checkpoints
         self.logger = logger or setup_logger("dqn")
+        self.logger.info(
+            f"asserts_enabled={sys.flags.optimize == 0}, optimize={sys.flags.optimize}, PYTHONOPTIMIZE={os.getenv('PYTHONOPTIMIZE')}"
+        )
 
         # set up path names
         self.experiment_output_folder = experiment_output_folder
@@ -162,14 +168,17 @@ class AgentDQN:
         self.t = 0  # frame nr
         self.episodes = 0  # episode nr
         self.policy_model_update_counter = 0
-        
-        self.log_stride = 20_000  # change to taste (e.g., 5_000 if debugging)
-        
+
+        self.log_stride = 5_000  # change to taste (e.g., 5_000 if debugging)
+
         # Metrics to track training progress
         self._last_entropy = None
         self._last_frac_over_cap = None
         self._last_rel_target_drift = None
-        
+
+        self._tgt_clip_ema = None
+        self._tgt_clip_alpha = 0.1
+
         self.reset_training_episode_tracker()
 
         self.training_stats = []
@@ -178,7 +187,7 @@ class AgentDQN:
         # check that all paths were provided and that the files can be found
         if resume_training_path:
             self.load_training_state(resume_training_path)
-            
+
         self._init_early_stopping_vars()
 
     def _should_log(self):
@@ -252,7 +261,7 @@ class AgentDQN:
         # setup training configuration
         self.train_step_cnt = agent_params.get("train_step_cnt", 200_000)
         self.validation_enabled = agent_params.get("validation_enabled", True)
-        self.validation_step_cnt = agent_params.get("validation_step_cnt", 1_000)
+        self.validation_step_cnt = agent_params.get("validation_step_cnt", 3_000)
         self.validation_epsilon = agent_params.get("validation_epsilon", 0.0)
 
         self.replay_start_size = agent_params.get("replay_start_size", 5_000)
@@ -295,17 +304,17 @@ class AgentDQN:
         )
 
         self.logger.info("Loaded configuration settings.")
-        
+
     def _init_early_stopping_vars(self):
         # ---- Early stop: rolling metrics & thresholds tuned for your failure mode ----
         W = 8  # rolling window (log points, not steps)
         self._es_win = {
-            "H": deque(maxlen=W),             # action entropy
-            "frac_cap": deque(maxlen=W),      # frac_u>0.4
-            "td_p95": deque(maxlen=W),        # p95(|TD|)
-            "clamp_pct": deque(maxlen=W),     # fraction of clamped targets
-            "tgt_drift": deque(maxlen=W),     # ||target-source||/||source||
-            "max_q": deque(maxlen=W),         # mean max-Q
+            "H": deque(maxlen=W),  # action entropy
+            "frac_cap": deque(maxlen=W),  # frac_u>0.4
+            "td_p95": deque(maxlen=W),  # p95(|TD|)
+            "clamp_pct": deque(maxlen=W),  # fraction of clamped targets
+            "tgt_drift": deque(maxlen=W),  # ||target-source||/||source||
+            "max_q": deque(maxlen=W),  # mean max-Q
         }
 
         # Derived entropy baseline ~ uniform
@@ -314,37 +323,56 @@ class AgentDQN:
         # Tuned thresholds (conservative; trip only if several agree)
         self._es_cfg = {
             # action saturation / collapse
-            "min_entropy_frac": 0.15,     # H < 0.15 * log(N)
-            "high_frac_cap":    0.70,     # >70% of actions over 0.4
+            "min_entropy_frac": 0.15,  # H < 0.15 * log(N)
+            "high_frac_cap": 0.70,  # >70% of actions over 0.4
             # instability / blow-up
-            "clamp_pct_high":   0.55,     # >55% clamped targets on average
-            "td_p95_jump":      2.0,      # last-half median > 2x first-half median
-            "tgt_drift_high":   0.30,     # median relative drift > 0.30
+            "clamp_pct_high": 0.55,  # >55% clamped targets on average
+            "td_p95_jump": 2.0,  # last-half median > 2x first-half median
+            "tgt_drift_high": 0.30,  # median relative drift > 0.30
             # patience in log points (not epochs)
-            "pat_points":       4,        # need at least this many points in window
+            "pat_points": 4,  # need at least this many points in window
         }
-        
-    def _es_update(self, *, H=None, frac_cap=None, td_p95=None, clamp_pct=None, tgt_drift=None, max_q=None):
-        if H is not None:          self._es_win["H"].append(float(H))
-        if frac_cap is not None:   self._es_win["frac_cap"].append(float(frac_cap))
-        if td_p95 is not None:     self._es_win["td_p95"].append(float(td_p95))
-        if clamp_pct is not None:  self._es_win["clamp_pct"].append(float(clamp_pct))
-        if tgt_drift is not None:  self._es_win["tgt_drift"].append(float(tgt_drift))
-        if max_q is not None:      self._es_win["max_q"].append(float(max_q))
+
+        self._nonfinite_counter = 0
+        self.nonfinite_patience = 3
+
+    def _es_update(
+        self,
+        *,
+        H=None,
+        frac_cap=None,
+        td_p95=None,
+        clamp_pct=None,
+        tgt_drift=None,
+        max_q=None,
+    ):
+        if H is not None:
+            self._es_win["H"].append(float(H))
+        if frac_cap is not None:
+            self._es_win["frac_cap"].append(float(frac_cap))
+        if td_p95 is not None:
+            self._es_win["td_p95"].append(float(td_p95))
+        if clamp_pct is not None:
+            self._es_win["clamp_pct"].append(float(clamp_pct))
+        if tgt_drift is not None:
+            self._es_win["tgt_drift"].append(float(tgt_drift))
+        if max_q is not None:
+            self._es_win["max_q"].append(float(max_q))
 
     def _median(self, arr):
-        if not arr: return None
+        if not arr:
+            return None
         v = sorted(arr)
         n = len(v)
-        return v[n//2] if n % 2 else 0.5*(v[n//2 - 1] + v[n//2])
+        return v[n // 2] if n % 2 else 0.5 * (v[n // 2 - 1] + v[n // 2])
 
     def _es_trend_ratio(self, arr):
         """Ratio of median(last half) / median(first half); returns None if insufficient data."""
         if len(arr) < max(2, self._es_cfg["pat_points"]):
             return None
-        mid = len(arr)//2
+        mid = len(arr) // 2
         first = self._median(list(arr)[:mid])
-        last  = self._median(list(arr)[mid:])
+        last = self._median(list(arr)[mid:])
         if first is None or last is None or first <= 1e-12:
             return None
         return last / first
@@ -356,20 +384,30 @@ class AgentDQN:
             return
 
         H_u = self._H_uniform if self._H_uniform > 0 else 1.0
-        H_med       = self._median(self._es_win["H"])
-        frac_med    = self._median(self._es_win["frac_cap"])
-        clamp_med   = self._median(self._es_win["clamp_pct"])
-        drift_med   = self._median(self._es_win["tgt_drift"])
-        td_growth   = self._es_trend_ratio(self._es_win["td_p95"])
+        H_med = self._median(self._es_win["H"])
+        frac_med = self._median(self._es_win["frac_cap"])
+        clamp_med = self._median(self._es_win["clamp_pct"])
+        drift_med = self._median(self._es_win["tgt_drift"])
+        td_growth = self._es_trend_ratio(self._es_win["td_p95"])
 
         # Signals (each boolean)
-        S_action_collapse = (H_med is not None) and (H_med < self._es_cfg["min_entropy_frac"] * H_u) \
-                            and (frac_med is not None) and (frac_med > self._es_cfg["high_frac_cap"])
+        S_action_collapse = (
+            (H_med is not None)
+            and (H_med < self._es_cfg["min_entropy_frac"] * H_u)
+            and (frac_med is not None)
+            and (frac_med > self._es_cfg["high_frac_cap"])
+        )
 
-        S_target_instab   = (clamp_med is not None) and (clamp_med > self._es_cfg["clamp_pct_high"]) \
-                            and (td_growth is not None) and (td_growth > self._es_cfg["td_p95_jump"])
+        S_target_instab = (
+            (clamp_med is not None)
+            and (clamp_med > self._es_cfg["clamp_pct_high"])
+            and (td_growth is not None)
+            and (td_growth > self._es_cfg["td_p95_jump"])
+        )
 
-        S_drift_spike     = (drift_med is not None) and (drift_med > self._es_cfg["tgt_drift_high"])
+        S_drift_spike = (drift_med is not None) and (
+            drift_med > self._es_cfg["tgt_drift_high"]
+        )
 
         # Trip only when at least two collapse signals are ON together for sustained points
         if sum([S_action_collapse, S_target_instab, S_drift_spike]) >= 2:
@@ -419,7 +457,7 @@ class AgentDQN:
         """
         estimator_settings = config.get("estimator", {"model": "Conv_QNET", "args": {}})
 
-        if estimator_settings["model"] == "OpinionNet" or estimator_settings["model"] == "OpinionNetCommonAB":
+        if estimator_settings["model"] == "OpinionNet":
             self.policy_model = OpinionNet(
                 self.in_features,
                 nr_betas=len(self.betas),
@@ -430,21 +468,34 @@ class AgentDQN:
                 nr_betas=len(self.betas),
                 **estimator_settings["args"],
             )
-            self.policy_model.train()
-            self.target_model.load_state_dict(self.policy_model.state_dict())
-            self.target_model.eval()
-            # initialize_network_to_match_policy(self.policy_model, self.train_env, available_budget=2.0)
-            # initialize_network_to_match_policy(self.target_model, self.validation_env, available_budget=2.0)
-            
+
+        elif estimator_settings["model"] == "OpinionNetCommonAB":
+            self.policy_model = OpinionNetCommonAB(
+                self.in_features,
+                nr_betas=len(self.betas),
+                **estimator_settings["args"],
+            )
+            self.target_model = OpinionNetCommonAB(
+                self.in_features,
+                nr_betas=len(self.betas),
+                **estimator_settings["args"],
+            )
+
         else:
             estimator_name = estimator_settings["model"]
             raise ValueError(f"Could not setup estimator. Tried with: {estimator_name}")
+
+        self.policy_model.train()
+        self.target_model.load_state_dict(self.policy_model.state_dict())
+        self.target_model.eval()
+        # initialize_network_to_match_policy(self.policy_model, self.train_env, available_budget=2.0)
+        # initialize_network_to_match_policy(self.target_model, self.validation_env, available_budget=2.0)
 
         optimizer_settings = config.get("optim", {"name": "Adam", "args": {}})
         self.optimizer = optim.Adam(
             self.policy_model.parameters(), **optimizer_settings["args"]
         )
-        
+
         self.logger.info("Initialized networks and optimizer.")
 
     @torch.no_grad()
@@ -453,25 +504,31 @@ class AgentDQN:
         if self._should_log():
             try:
                 num, den = 0.0, 1e-12
-                for tp, sp in zip(self.target_model.parameters(), self.policy_model.parameters()):
+                for tp, sp in zip(
+                    self.target_model.parameters(), self.policy_model.parameters()
+                ):
                     num += (tp.data - sp.data).pow(2).sum().item()
                     den += sp.data.pow(2).sum().item()
-                rel_dist = (num ** 0.5) / (den ** 0.5)
+                rel_dist = (num**0.5) / (den**0.5)
                 self._last_rel_target_drift = rel_dist
                 self._es_update(tgt_drift=rel_dist)
-                self.logger.info(f"target_drift@t={self.t} | ||t-s||/||s||={rel_dist:.3e} | tau={tau}")
+                self.logger.info(
+                    f"target_drift@t={self.t} | ||t-s||/||s||={rel_dist:.3e} | tau={tau}"
+                )
             except Exception as e:
                 self.logger.debug(f"[drift-log-skip] {e}")
-                
+
         # EMA for parameters
-        for tp, sp in zip(self.target_model.parameters(), self.policy_model.parameters()):
+        for tp, sp in zip(
+            self.target_model.parameters(), self.policy_model.parameters()
+        ):
             tp.data.lerp_(sp.data, tau)
         for tb, sb in zip(self.target_model.buffers(), self.policy_model.buffers()):
             tb.copy_(sb)
-        
+
     def _make_train_env(self):
         return self.env_factory.get_randomized_env()
-    
+
     def _make_validation_env(self):
         total_versions = len(self.env_factory.validation_versions)
 
@@ -491,7 +548,7 @@ class AgentDQN:
         env = self.env_factory.get_validation_env(version=chosen_version)
         self.validation_env_counters[chosen_version] += 1
         return env
-    
+
     def _read_and_init_envs(self):
         """Read dimensions of the input and output of the simulation environment"""
         self.env_factory = EnvironmentFactory()
@@ -499,17 +556,17 @@ class AgentDQN:
 
         self.train_env = self._make_train_env()
         self.validation_env = self._make_validation_env()
-        
-        self.train_env_s, _ = self.train_env.reset(randomize_opinions=True) 
+
+        self.train_env_s, _ = self.train_env.reset(randomize_opinions=True)
         self.val_env_s, _ = self.validation_env.reset()
-        
+
         self.in_features = self.train_env.observation_space.shape[0]
         self.num_actions = self.train_env.action_space.shape[0]
 
-        
-
     def load_models(self, models_load_file):
-        checkpoint = torch.load(models_load_file, map_location=device, weights_only=False)
+        checkpoint = torch.load(
+            models_load_file, map_location=device, weights_only=False
+        )
         self.policy_model.load_state_dict(checkpoint["policy_model_state_dict"])
         self.policy_model.train()
         self.target_model.load_state_dict(checkpoint["target_model_state_dict"])
@@ -517,7 +574,9 @@ class AgentDQN:
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
     def load_training_stats(self, training_stats_file):
-        checkpoint = torch.load(training_stats_file, map_location=device, weights_only=False)
+        checkpoint = torch.load(
+            training_stats_file, map_location=device, weights_only=False
+        )
 
         self.t = checkpoint["frame"]
         self.episodes = checkpoint["episode"]
@@ -568,7 +627,6 @@ class AgentDQN:
 
         self.logger.debug(f"Training status saved at t = {self.t}")
 
-
     # def select_action(self, state: torch.Tensor, epsilon: float = None, random_action: bool = False):
     #     if state.dim() == 1:
     #         state = state.unsqueeze(0)
@@ -612,7 +670,7 @@ class AgentDQN:
     #         w_full.cpu().numpy(),             # (1, J, N)
     #         avg_q,
     #     )
-    
+
     # def model_learn(self, sample, debug=True):
     #     """Compute the loss with TD learning for the FixedW (discrete β) model."""
     #     # Unpack; we ignore ws for FixedW
@@ -659,7 +717,9 @@ class AgentDQN:
     #     return float(loss.item())
 
     # Original select action
-    def select_action(self, state: torch.Tensor, epsilon: float = None, random_action: bool = False):
+    def select_action(
+        self, state: torch.Tensor, epsilon: float = None, random_action: bool = False
+    ):
         """
         Select an action by evaluating the Q-function over the β grid.
 
@@ -683,10 +743,15 @@ class AgentDQN:
             assert c.shape == (B, J), f"c shape mismatch: {c.shape}"
 
             w_star = self.policy_model.compute_w_star(A_diag, b)  # (B, J, N)
-            q_values = self.policy_model.compute_q_values(w_star, A_diag, b, c)  # (B, J)
+            q_values = self.policy_model.compute_q_values(
+                w_star, A_diag, b, c
+            )  # (B, J)
 
             assert w_star.shape == (B, J, N), f"w_star shape mismatch: {w_star.shape}"
-            assert q_values.shape == (B, J), f"q_values shape mismatch: {q_values.shape}"
+            assert q_values.shape == (
+                B,
+                J,
+            ), f"q_values shape mismatch: {q_values.shape}"
 
             eps = 0.0 if epsilon is None else float(epsilon)
             noise_amplitude = self.action_w_noise_amplitude * eps
@@ -695,17 +760,31 @@ class AgentDQN:
             if random_action or (epsilon is not None and np.random.rand() < epsilon):
                 rand_idx = torch.randint(low=0, high=J, size=(B,), dtype=torch.long)
 
-                w_rand = w_star.gather(1, rand_idx.unsqueeze(1).unsqueeze(2).expand(-1, 1, N)).squeeze(1)  # (B, N)
+                w_rand = w_star.gather(
+                    1, rand_idx.unsqueeze(1).unsqueeze(2).expand(-1, 1, N)
+                ).squeeze(
+                    1
+                )  # (B, N)
                 assert w_rand.shape == (B, N), f"w_rand shape: {w_rand.shape}"
 
-                w_rand_noisy = self.policy_model.apply_action_noise(w_rand, noise_amplitude)
+                w_rand_noisy = self.policy_model.apply_action_noise(
+                    w_rand, noise_amplitude
+                )
 
-                rand_beta_values = torch.tensor(self.betas)[rand_idx].unsqueeze(1).expand(-1, N)  # (B, N)
+                rand_beta_values = (
+                    torch.tensor(self.betas)[rand_idx].unsqueeze(1).expand(-1, N)
+                )  # (B, N)
 
-                u = self.policy_model.compute_action_from_w(w_rand_noisy, rand_beta_values)
+                u = self.policy_model.compute_action_from_w(
+                    w_rand_noisy, rand_beta_values
+                )
 
                 w_full = torch.zeros_like(w_star)
-                w_full.scatter_(1, rand_idx.reshape(-1, 1, 1).expand(-1, 1, N), w_rand_noisy.unsqueeze(1))
+                w_full.scatter_(
+                    1,
+                    rand_idx.reshape(-1, 1, 1).expand(-1, 1, N),
+                    w_rand_noisy.unsqueeze(1),
+                )
 
                 q_rand = q_values.gather(1, rand_idx.unsqueeze(1)).squeeze(1)  # (B,)
                 q_rand_mean = q_rand.mean(dim=0)  # scalar
@@ -722,15 +801,25 @@ class AgentDQN:
             beta_idx_exp = beta_idx.unsqueeze(1).unsqueeze(2).expand(-1, 1, N)
 
             assert beta_idx.shape == (B,), f"beta_idx shape: {beta_idx.shape}"
-            assert beta_idx_exp.shape == (B, 1, N), f"beta_idx_exp shape: {beta_idx_exp.shape}"
+            assert beta_idx_exp.shape == (
+                B,
+                1,
+                N,
+            ), f"beta_idx_exp shape: {beta_idx_exp.shape}"
 
             optimal_w = w_star.gather(1, beta_idx_exp).squeeze(1)  # (B, N)
 
-            optimal_w_noisy = self.policy_model.apply_action_noise(optimal_w, noise_amplitude)
+            optimal_w_noisy = self.policy_model.apply_action_noise(
+                optimal_w, noise_amplitude
+            )
 
-            beta_values = torch.tensor(
-                [self.betas[int(i)] for i in beta_idx], dtype=torch.float32
-            ).unsqueeze(1).expand(-1, N)  # (B, N)
+            beta_values = (
+                torch.tensor(
+                    [self.betas[int(i)] for i in beta_idx], dtype=torch.float32
+                )
+                .unsqueeze(1)
+                .expand(-1, N)
+            )  # (B, N)
 
             u = self.policy_model.compute_action_from_w(optimal_w_noisy, beta_values)
 
@@ -745,73 +834,95 @@ class AgentDQN:
                 w_full.cpu().numpy(),
                 max_q.mean().item(),
             )
-               
+
     def model_learn(self, sample, debug=True):
         """TD learning with Double DQN targets, Huber loss, grad clipping, and soft target updates."""
-        # Unpack
+        # Unpack (already tensors from ReplayBuffer.sample)
         states, (beta_indices, ws), rewards, next_states, dones = sample
 
         device = next(self.policy_model.parameters()).device
         B = len(states)
 
-        # Tensors
-        states      = torch.as_tensor(np.stack(states),      dtype=torch.float32, device=device)
-        next_states = torch.as_tensor(np.stack(next_states), dtype=torch.float32, device=device)
-        beta_indices = torch.as_tensor(beta_indices, dtype=torch.long,  device=device).view(-1)   # (B,)
-        ws          = torch.as_tensor(np.stack(ws), dtype=torch.float32, device=device)           # (B, J, N)
-        rewards     = torch.as_tensor(rewards, dtype=torch.float32, device=device).view(B, 1)
-        dones       = torch.as_tensor(dones,   dtype=torch.float32, device=device).view(B, 1)
+        # Ensure correct dtypes/shapes on the right device
+        states = states.to(device=device, dtype=torch.float32)
+        next_states = next_states.to(device=device, dtype=torch.float32)
+        beta_indices = beta_indices.to(device=device, dtype=torch.long).view(-1)
+        ws = ws.to(device=device, dtype=torch.float32)  # (B, J, N)
+        rewards = rewards.to(device=device, dtype=torch.float32).view(B, 1)
+        dones = dones.to(device=device, dtype=torch.float32).view(B, 1)
 
-        # ---- Q(s, β) using the *online* network ----
+        # ---- Q(s, β) using the online network ----
         self.policy_model.train()
         abc = self.policy_model(states)
-        A_diag, b, c = abc["A_diag"], abc["b"], abc["c"]           # A_diag/b: (B, J, N), c: (B, J)
+        A_diag, b, c = (
+            abc["A_diag"],
+            abc["b"],
+            abc["c"],
+        )  # A_diag/b: (B, J, N), c: (B, J)
 
-        # Q(s,β) evaluated at the stored ws (shape must match A_diag/b)
         assert ws.shape == A_diag.shape, f"ws: {ws.shape}, A_diag: {A_diag.shape}"
-        q_values = self.policy_model.compute_q_values(ws, A_diag, b, c)  # (B, J)
 
-        # Gather Q(s, β_taken)
+        q_values = self.policy_model.compute_q_values(ws, A_diag, b, c)  # (B, J)
         q_sa = q_values.gather(1, beta_indices.unsqueeze(1))  # (B, 1)
 
         # ---- Double DQN target ----
         with torch.no_grad():
-            # Online net selects β' on next state
+            # Online selects β'
             abc_next_online = self.policy_model(next_states)
-            A_do, b_o, c_o  = abc_next_online["A_diag"], abc_next_online["b"], abc_next_online["c"]
+            A_do, b_o, c_o = (
+                abc_next_online["A_diag"],
+                abc_next_online["b"],
+                abc_next_online["c"],
+            )
             w_star_next_online = self.policy_model.compute_w_star(A_do, b_o)
-            q_next_online = self.policy_model.compute_q_values(w_star_next_online, A_do, b_o, c_o)  # (B, J)
-            next_beta_idx = q_next_online.argmax(dim=1, keepdim=True)                               # (B, 1)
+            q_next_online = self.policy_model.compute_q_values(
+                w_star_next_online, A_do, b_o, c_o
+            )  # (B, J)
+            next_beta_idx = q_next_online.argmax(dim=1, keepdim=True)  # (B, 1)
 
-            # Target net evaluates that choice
+            # Target evaluates that choice
             abc_next_tgt = self.target_model(next_states)
-            A_dt, b_t, c_t = abc_next_tgt["A_diag"], abc_next_tgt["b"], abc_next_tgt["c"]
+            A_dt, b_t, c_t = (
+                abc_next_tgt["A_diag"],
+                abc_next_tgt["b"],
+                abc_next_tgt["c"],
+            )
             w_star_next_tgt = self.target_model.compute_w_star(A_dt, b_t)
-            q_next_target = self.target_model.compute_q_values(w_star_next_tgt, A_dt, b_t, c_t)     # (B, J)
-            max_next_q = q_next_target.gather(1, next_beta_idx)                                     # (B, 1)
+            q_next_target = self.target_model.compute_q_values(
+                w_star_next_tgt, A_dt, b_t, c_t
+            )  # (B, J)
+            max_next_q = q_next_target.gather(1, next_beta_idx)  # (B, 1)
 
-            target = rewards + self.gamma * (1.0 - dones) * max_next_q                              # (B, 1)
-            
-            # Clamp targets
-            with torch.no_grad():
-                clamp_val = robust_quantile(target.abs(), 0.98).item()
-                target = target.clamp(-clamp_val, clamp_val)
-                
+            target = rewards + self.gamma * (1.0 - dones) * max_next_q  # (B, 1)
+
+            # Robust clamp
+            raw_clip = robust_quantile(target.abs(), 0.98).item()
+            new_clip = max(raw_clip, 1e-8)  # avoid zero / denorms
+            if self._tgt_clip_ema is None:
+                self._tgt_clip_ema = new_clip
+            else:
+                self._tgt_clip_ema = (
+                    1.0 - self._tgt_clip_alpha
+                ) * self._tgt_clip_ema + self._tgt_clip_alpha * new_clip
+
+            clamp_val = float(self._tgt_clip_ema)
+            target = target.clamp(-clamp_val, clamp_val)
+            clamp_p = (target.abs() >= (clamp_val - 1e-12)).float().mean().item()
+
+        # Optional logging stats
         if self._should_log():
             try:
                 with torch.no_grad():
-                    td      = (target - q_sa)                    # (B,1)
-                    td_abs  = td.abs()
-                    qsa_m   = q_sa.mean().item()
-                    tgt_m   = target.mean().item()
-                    td_m    = td.mean().item()
-                    # p95 robust stat
+                    td = target - q_sa
+                    td_abs = td.abs()
+                    qsa_m = q_sa.mean().item()
+                    tgt_m = target.mean().item()
+                    td_m = td.mean().item()
                     td_p95 = robust_quantile(td_abs, 0.95).item()
-                    A_min   = A_diag.min().item()
-                    A_max   = A_diag.max().item()
-                    b_mean  = b.abs().mean().item()
-                    c_mean  = c.abs().mean().item()
-                    clamp_p = (target.abs() >= clamp_val).float().mean().item()
+                    A_min = A_diag.min().item()
+                    A_max = A_diag.max().item()
+                    b_mean = b.abs().mean().item()
+                    c_mean = c.abs().mean().item()
                     self._es_update(td_p95=td_p95, clamp_pct=clamp_p)
                 self.logger.info(
                     f"learn@t={self.t} | q_sa={qsa_m:.3g} | tgt={tgt_m:.3g} "
@@ -821,17 +932,33 @@ class AgentDQN:
                 )
             except Exception as e:
                 self.logger.debug(f"[learn-log-skip] {e}")
-                
-        # ---- Loss & optimization ----
-        loss = F.smooth_l1_loss(q_sa, target)           # Huber
+
+        # ---- Loss & backward ----
+        loss = F.smooth_l1_loss(q_sa, target)
         self.optimizer.zero_grad()
         if not torch.isfinite(loss):
-            self.logger.error(f"[EARLY STOP] Non-finite loss at t={self.t}: {float(loss.item()) if loss.numel()==1 else 'tensor'}")
+            self.logger.error(
+                f"[EARLY STOP] Non-finite loss at t={self.t}: {float(loss.item()) if loss.numel()==1 else 'tensor'}"
+            )
             raise EarlyStop("Non-finite loss encountered.")
         loss.backward()
-        
-        grad_norm_pre = None
-        nonfinite_grads = 0
+
+        # Always do a quick non-finite gradient check (cheap, early exit)
+        bad_grad = False
+        for p in self.policy_model.parameters():
+            if p.grad is not None and not torch.isfinite(p.grad).all():
+                bad_grad = True
+                break
+
+        if bad_grad:
+            self._nonfinite_counter += 1
+            if self._nonfinite_counter > self.nonfinite_patience:
+                raise EarlyStop("Repeated non-finite gradients.")
+        else:
+            self._nonfinite_counter = 0
+
+        # Detailed grad norms only on log steps
+        grad_norm_pre = grad_norm_post = None
         if self._should_log():
             try:
                 total_sq = 0.0
@@ -839,89 +966,77 @@ class AgentDQN:
                     if p.grad is not None:
                         g = p.grad.detach()
                         total_sq += g.pow(2).sum().item()
-                        if not torch.isfinite(g).all():
-                            nonfinite_grads += 1
-                grad_norm_pre = total_sq ** 0.5
+                grad_norm_pre = total_sq**0.5
             except Exception:
                 pass
-        
-        if nonfinite_grads > 0:
-            self._nonfinite_counter += 1
-            if self._nonfinite_counter > self.nonfinite_patience:
-                raise EarlyStop("Repeated non-finite gradients.")
-        else:
-            self._nonfinite_counter = 0
-            
+
         torch.nn.utils.clip_grad_norm_(self.policy_model.parameters(), 10.0)
-        
-        grad_norm_post = None
+        self.optimizer.step()
+
         if self._should_log():
             try:
                 total_sq = 0.0
                 for p in self.policy_model.parameters():
                     if p.grad is not None:
                         total_sq += p.grad.detach().pow(2).sum().item()
-                grad_norm_post = total_sq ** 0.5
+                grad_norm_post = total_sq**0.5
             except Exception:
                 pass
-            
-        # Current LR (first param group)
-        lr_val = None
-        if self._should_log():
+
+            # Current LR and param norm
+            lr_val = None
             try:
                 lr_val = self.optimizer.param_groups[0].get("lr", None)
             except Exception:
                 pass
 
-        # Param L2 norm (for scale context)
-        param_norm = None
-        if self._should_log():
+            param_norm = None
             try:
                 with torch.no_grad():
                     s = 0.0
                     for p in self.policy_model.parameters():
                         s += p.data.pow(2).sum().item()
-                    param_norm = s ** 0.5
+                    param_norm = s**0.5
             except Exception:
                 pass
 
-        # Log the grad/param stats together (once per stride)
-        if self._should_log():
             try:
                 self.logger.info(
                     "optim@t=%d | loss=%.4g | grad||pre=%.3g | grad||post=%.3g | "
-                    "nonfinite_grads=%d | param||=%.3g | lr=%s" %
-                    (
+                    "nonfinite_grads=%d | param||=%.3g | lr=%s"
+                    % (
                         self.t,
                         float(loss.item()),
-                        (grad_norm_pre if grad_norm_pre is not None else float('nan')),
-                        (grad_norm_post if grad_norm_post is not None else float('nan')),
-                        nonfinite_grads,
-                        (param_norm if param_norm is not None else float('nan')),
+                        (grad_norm_pre if grad_norm_pre is not None else float("nan")),
+                        (
+                            grad_norm_post
+                            if grad_norm_post is not None
+                            else float("nan")
+                        ),
+                        1 if bad_grad else 0,
+                        (param_norm if param_norm is not None else float("nan")),
                         (f"{lr_val:.3g}" if isinstance(lr_val, float) else str(lr_val)),
                     )
                 )
             except Exception:
                 pass
-        
-        self.optimizer.step()
 
-        # ---- Gentler target updates (Polyak) ----
+        # Soft target update
         self._soft_update(tau=self.tau)
 
-        # Post-step sanity check for non-finite params (rare, but helpful)
+        # Optional param sanity check on log steps
         if self._should_log():
             try:
                 for name, p in self.policy_model.named_parameters():
                     if torch.isnan(p).any() or torch.isinf(p).any():
-                        self.logger.info(f"[WARN] non-finite param in {name} @ t={self.t}")
+                        self.logger.info(
+                            f"[WARN] non-finite param in {name} @ t={self.t}"
+                        )
                         break
             except Exception:
                 pass
-    
+
         return float(loss.item())
-    
-    
 
     def train(self, train_epochs: int) -> True:
         """The main call for the training loop of the DQN Agent.
@@ -1057,8 +1172,8 @@ class AgentDQN:
                 epsilon=self.epsilon_by_frame(self.t),
             )
             action = np.asarray(action, dtype=np.float32)  # (1, N)
-            action = action[0]                             # -> (N,) even when N==1
-            
+            action = action[0]  # -> (N,) even when N==1
+
             if self._should_log():
                 try:
                     # action is (N,)
@@ -1068,7 +1183,7 @@ class AgentDQN:
                     # Pull chosen w "logits" for entropy proxy
                     bidx = int(np.asarray(beta_idx).reshape(-1)[0])
                     w_tensor = torch.tensor(w, dtype=torch.float32)  # (1, J, N)
-                    w_chosen = w_tensor[0, bidx, :]                  # (N,)
+                    w_chosen = w_tensor[0, bidx, :]  # (N,)
                     with torch.no_grad():
                         p = torch.softmax(w_chosen, dim=-1)
                         H = -(p * p.clamp_min(1e-8).log()).sum().item()
@@ -1080,14 +1195,14 @@ class AgentDQN:
                     self._last_entropy = H
                     self._last_frac_over_cap = frac_over_cap
                     self._es_update(H=H, frac_cap=frac_over_cap, max_q=max_q)
-                
+
                     try:
                         self._early_stop_maybe()
                     except EarlyStop:
                         raise
                     except Exception as e:
                         self.logger.debug(f"[es-check-skip] {e}")
-                    
+
                 except Exception as e:
                     self.logger.debug(f"[act-log-skip] {e}")
 
@@ -1097,18 +1212,32 @@ class AgentDQN:
 
             if self._should_log():
                 if not np.isfinite(action).all():
-                    self.logger.info(f"[WARN] non-finite action at t={self.t}: {action}")
-        
+                    self.logger.info(
+                        f"[WARN] non-finite action at t={self.t}: {action}"
+                    )
+
             assert action.ndim == 1, f"expected (N,), got {action.shape}"
             if not np.isfinite(action).all():
-                self.logger.error(f"[EARLY STOP] Non-finite action at t={self.t}: {action}")
+                self.logger.error(
+                    f"[EARLY STOP] Non-finite action at t={self.t}: {action}"
+                )
                 raise EarlyStop("Non-finite action encountered.")
             s_prime, reward, is_terminated, truncated, info = self.train_env.step(
                 action
             )
 
             self.logger.debug(f"State (s') shape after step: {s_prime.shape}")
-        
+
+            w = np.asarray(w, dtype=np.float32)
+            if w.ndim == 3 and w.shape[0] == 1:  # actor returns (1, J, N)
+                w = w[0]  # -> (J, N)
+            assert w.ndim == 2 and w.shape == (
+                len(self.betas),
+                self.num_actions,
+            ), f"expected w=(J,N)=({len(self.betas)},{self.num_actions}), got {w.shape}"
+
+            beta_idx = np.asarray(beta_idx).reshape(-1).astype(np.int64)
+
             done_flag = bool(is_terminated or truncated)
             self.replay_buffer.append(
                 self.train_env_s, (beta_idx, w), reward, s_prime, done_flag
@@ -1123,7 +1252,7 @@ class AgentDQN:
                     )
                 except Exception as e:
                     self.logger.debug(f"[buffer-log-skip] {e}")
-        
+
             # Train policy model
             if (
                 self.t > self.replay_start_size
@@ -1185,7 +1314,7 @@ class AgentDQN:
             f" | frac_u>0.4(last)={None if self._last_frac_over_cap is None else round(self._last_frac_over_cap,3)}"
             f" | tgt_drift(last)={None if self._last_rel_target_drift is None else f'{self._last_rel_target_drift:.2e}'}"
         )
-        
+
         self.logger.info(
             "TRAINING STATS"
             + " | Frames seen: "
@@ -1281,11 +1410,11 @@ class AgentDQN:
         epoch_episode_discounted_rewards = []
         epoch_episode_nr_frames = []
         epoch_max_qs = []
-        valiation_t = 0
+        validation_t = 0
 
         start_time = datetime.datetime.now()
 
-        while valiation_t < self.validation_step_cnt:
+        while validation_t < self.validation_step_cnt:
             (
                 current_episode_reward,
                 current_episode_discounted_reward,
@@ -1293,7 +1422,7 @@ class AgentDQN:
                 ep_max_qs,
             ) = self.validate_episode()
 
-            valiation_t += ep_frames
+            validation_t += ep_frames
 
             epoch_episode_rewards.append(current_episode_reward)
             epoch_episode_discounted_rewards.append(current_episode_discounted_reward)
@@ -1379,7 +1508,9 @@ class AgentDQN:
             )
             action = np.squeeze(action)
             if not np.isfinite(action).all():
-                self.logger.error(f"[EARLY STOP] Non-finite action at t={self.t}: {action}")
+                self.logger.error(
+                    f"[EARLY STOP] Non-finite action at t={self.t}: {action}"
+                )
                 raise EarlyStop("Non-finite action encountered.")
             s_prime, reward, is_terminated, truncated, info = self.validation_env.step(
                 action
@@ -1414,8 +1545,6 @@ class AgentDQN:
             + " | Validation epoch time: "
             + str(stats["epoch_time"])
         )
-
-    
 
 
 def main():

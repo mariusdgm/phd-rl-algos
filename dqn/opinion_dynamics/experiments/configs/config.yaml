@@ -2,9 +2,12 @@ experiment: ["fixed"]
 
 agent_params:
   args_:
-    target_soft_tau: [0.0005, 0.001, 0.0015]
-    action_w_noise_amplitude: [0.05, 0.15, 0.3] 
+    target_soft_tau: [0.0001, 0.0005, 0.0008]
+    replay_start_size: [2_000, 5_000]
+
+estimator:
+  model: [OpinionNet, OpinionNetCommonAB]
 
 # optim:
 #   args_:
-#     lr: [0.00001, 0.00002] 
+#     lr: [0.00001, 0.0001] 

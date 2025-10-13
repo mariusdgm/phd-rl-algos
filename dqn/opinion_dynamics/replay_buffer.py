@@ -32,10 +32,7 @@ class ReplayBuffer:
         beta_idx, w = action
         beta_idx = np.array(beta_idx, dtype=np.int64)
         
-        # Fix over-wrapped dimensions (e.g., (1, J, N) → (J, N))
-        if w.ndim == 3 and w.shape[0] == 1:
-            w = w[0]  # (J, N)
-
+        # storage contract: w is (J, N)
         assert w.ndim == 2, f"Expected w to be (J, N), got {w.shape}"
 
         self.buffer.append((state, (beta_idx, w), reward, next_state, done))
