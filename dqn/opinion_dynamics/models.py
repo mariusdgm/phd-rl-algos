@@ -11,7 +11,7 @@ class OpinionNetCommonAB(nn.Module):
         nr_agents: int,
         nr_betas: int = 2,
         lin_hidden_size: int = 64,
-        c_tanh_scale: bool = False,  
+        c_tanh_scale: Optional[float] = None,  
         softplus_beta: float = 1.0,            # softness for A
         wstar_eps: float = 1e-6,               # safety in w* division
         return_w_star_default: bool = False,   # default for forward()
@@ -168,7 +168,7 @@ class OpinionNet(nn.Module):
         nr_agents: int,
         nr_betas: int = 2,
         lin_hidden_size: int = 64,
-        c_tanh_scale: bool = False,  # keep None to match your winning setup
+        c_tanh_scale: Optional[float] = None,  # keep None to match your winning setup
         softplus_beta: float = 1.0,            # softness for A; leave default
         wstar_eps: float = 1e-6,               # numerical safety for w* division
         return_w_star_default: bool = False,   # default behavior for forward()

@@ -1,6 +1,6 @@
 experiment: "opinion_agent_dqn"
 
-epochs_to_train: 10
+epochs_to_train: 30
 environment: [opinion_net]
 
 agent_params:
@@ -26,10 +26,9 @@ agent_params:
     epsilon:
       start: 1.0
       end: 0.05
-      decay: 1_200_000
+      decay: 4_000_000
 
 estimator:
-  # model: OpinionNet
   model: OpinionNetCommonAB
   args_:
     lin_hidden_size: 64

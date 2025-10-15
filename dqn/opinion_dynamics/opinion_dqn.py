@@ -895,20 +895,23 @@ class AgentDQN:
 
             target = rewards + self.gamma * (1.0 - dones) * max_next_q  # (B, 1)
 
+            # Disabled clamping
             # Robust clamp
-            raw_clip = robust_quantile(target.abs(), 0.98).item()
-            new_clip = max(raw_clip, 1e-8)  # avoid zero / denorms
-            if self._tgt_clip_ema is None:
-                self._tgt_clip_ema = new_clip
-            else:
-                self._tgt_clip_ema = (
-                    1.0 - self._tgt_clip_alpha
-                ) * self._tgt_clip_ema + self._tgt_clip_alpha * new_clip
+            # raw_clip = robust_quantile(target.abs(), 0.98).item()
+            # new_clip = max(raw_clip, 1e-8)  # avoid zero / denorms
+            # if self._tgt_clip_ema is None:
+            #     self._tgt_clip_ema = new_clip
+            # else:
+            #     self._tgt_clip_ema = (
+            #         1.0 - self._tgt_clip_alpha
+            #     ) * self._tgt_clip_ema + self._tgt_clip_alpha * new_clip
 
-            clamp_val = float(self._tgt_clip_ema)
-            target = target.clamp(-clamp_val, clamp_val)
-            clamp_p = (target.abs() >= (clamp_val - 1e-12)).float().mean().item()
+            # clamp_val = float(self._tgt_clip_ema)
+            # target = target.clamp(-clamp_val, clamp_val)
+            # clamp_p = (target.abs() >= (clamp_val - 1e-12)).float().mean().item()
 
+            clamp_p = 0.0
+            
         # Optional logging stats
         if self._should_log():
             try:
