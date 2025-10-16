@@ -22,8 +22,8 @@ class EnvironmentFactory:
             "control_beta": 0.5,
             "normalize_reward": True,
             "terminal_reward": 0.5,
-            "terminate_when_converged": True,
-            "dynamics_model": "laplacian",  # or "laplacian"
+            "terminate_when_converged": False,
+            "dynamics_model": "coca",  # or "laplacian"
             "seed": 42,
         }
 

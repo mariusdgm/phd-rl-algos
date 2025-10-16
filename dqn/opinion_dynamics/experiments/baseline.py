@@ -170,7 +170,7 @@ def run_policy_agent(agent, max_steps=1000):
         actions_over_time (np.ndarray): Array of actions taken at each step.
         all_intermediate_states (np.ndarray): All intermediate states at t_s granularity.
     """
-    time_points = [0.0]
+    time_points = []
     rewards_over_time = []
     actions_over_time = []
     opinions_over_time = []
