@@ -289,6 +289,7 @@ class AgentDQN:
             decay=eps_settings["decay"],
             eps_decay_start=self.replay_start_size,
         )
+        self.action_temperature = agent_params.get("action_temperature", 0.6)
 
         self._read_and_init_envs()  # sets up in_features etc...
 
@@ -776,7 +777,7 @@ class AgentDQN:
                 )  # (B, N)
 
                 u = self.policy_model.compute_action_from_w(
-                    w_rand_noisy, rand_beta_values
+                    w_rand_noisy, rand_beta_values, temperature=self.action_temperature
                 )
 
                 w_full = torch.zeros_like(w_star)
@@ -809,9 +810,7 @@ class AgentDQN:
 
             optimal_w = w_star.gather(1, beta_idx_exp).squeeze(1)  # (B, N)
 
-            optimal_w_noisy = self.policy_model.apply_action_noise(
-                optimal_w, noise_amplitude
-            )
+            optimal_w = self.policy_model.apply_action_noise(optimal_w, noise_amplitude)
 
             beta_values = (
                 torch.tensor(
@@ -821,10 +820,12 @@ class AgentDQN:
                 .expand(-1, N)
             )  # (B, N)
 
-            u = self.policy_model.compute_action_from_w(optimal_w_noisy, beta_values)
+            u = self.policy_model.compute_action_from_w(
+                optimal_w, beta_values, temperature=self.action_temperature
+            )
 
             w_full = torch.zeros_like(w_star)
-            w_full.scatter_(1, beta_idx_exp, optimal_w_noisy.unsqueeze(1))
+            w_full.scatter_(1, beta_idx_exp, optimal_w.unsqueeze(1))
 
             assert u.shape == (B, N), f"u shape: {u.shape}"
 
@@ -911,7 +912,7 @@ class AgentDQN:
             # clamp_p = (target.abs() >= (clamp_val - 1e-12)).float().mean().item()
 
             clamp_p = 0.0
-            
+
         # Optional logging stats
         if self._should_log():
             try:

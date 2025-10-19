@@ -1,6 +1,6 @@
 experiment: "opinion_agent_dqn"
 
-epochs_to_train: 35
+epochs_to_train: 30
 environment: [opinion_net]
 
 agent_params:
@@ -16,22 +16,28 @@ agent_params:
     training_freq: 4
     
     target_model_update_freq: 1_000
-    target_soft_tau: 0.0015
+    target_soft_tau: 0.0005
 
-    action_w_noise_amplitude: 0.3
+    action_w_noise_amplitude: 0.5
 
     gamma: 0.99
-    betas: [0, 1, 2]
+    betas: [0.1, 1, 2]
 
     epsilon:
       start: 1.0
       end: 0.05
-      decay: 4_000_000
+      decay: 2_000_000
 
 estimator:
   model: OpinionNetCommonAB
   args_:
     lin_hidden_size: 64
+    c_tanh_scale: 2
+    softplus_beta: 1.0
+    wstar_eps: 0.005
+    A_min: 0.02               
+    A_max: 2.0
+    b_tanh_scale: null
 
 optim:
   name: Adam

@@ -17,7 +17,7 @@ class EnvironmentFactory:
             "t_s": 0.1,
             "connection_prob_range": (0.05, 0.1),
             "bidirectional_prob": 0.1,
-            "max_steps": 100,
+            "max_steps": 60,
             "opinion_end_tolerance": 0.05,
             "control_beta": 0.5,
             "normalize_reward": True,
