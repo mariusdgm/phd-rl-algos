@@ -188,12 +188,9 @@ class OpinionNetCommonAB(nn.Module):
     def compute_action_from_w(
         w: torch.Tensor,
         beta: torch.Tensor,
-        max_u: Optional[float] = None,
-        temperature: float = 0.6,  # NEW: <1.0 sharpens; >1.0 smooths
+        max_u: Optional[float] = None
     ) -> torch.Tensor:
-        # Stabilize: avoid division by 0; clamp temperature sensibly
-        t = max(float(temperature), 1e-6)
-        w_norm = F.softmax(w / t, dim=-1)  # <-- sharpened softmax
+        w_norm = F.softmax(w, dim=-1)  
         u = w_norm * beta  # keep β as the total budget scaler
         if max_u is not None:
             u = torch.clamp(u, max=max_u)
@@ -387,11 +384,8 @@ class OpinionNet(nn.Module):
         w: torch.Tensor,
         beta: torch.Tensor,
         max_u: Optional[float] = None,
-        temperature: float = 0.6,  # NEW: <1.0 sharpens; >1.0 smooths
     ) -> torch.Tensor:
-        # Stabilize: avoid division by 0; clamp temperature sensibly
-        t = max(float(temperature), 1e-6)
-        w_norm = F.softmax(w / t, dim=-1)  # <-- sharpened softmax
+        w_norm = F.softmax(w, dim=-1) 
         u = w_norm * beta  # keep β as the total budget scaler
         if max_u is not None:
             u = torch.clamp(u, max=max_u)

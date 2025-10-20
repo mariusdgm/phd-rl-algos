@@ -1,12 +1,12 @@
 experiment: ["fixed_res"]
 
-# agent_params:
-#   args_:
-#     target_soft_tau: [0.0005]
+agent_params:
+  args_:
+    target_soft_tau: [0.005, 0.01]
 
 optim:
   args_:
-    lr: [0.00005, 0.0001] 
+    lr: [0.0001] 
 
 estimator:
   model: [OpinionNet, OpinionNetCommonAB]

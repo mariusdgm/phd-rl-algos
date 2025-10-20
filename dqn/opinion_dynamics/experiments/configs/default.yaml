@@ -9,16 +9,16 @@ agent_params:
     train_step_cnt: 200_000
     validation_enabled: True
     validation_step_cnt: 5_000
-    validation_epsilon: 0
+    validation_epsilon: 0.05
 
     replay_start_size: 2_000
-    batch_size: 64
+    batch_size: 128
     training_freq: 4
     
     target_model_update_freq: 1_000
-    target_soft_tau: 0.0005
+    target_soft_tau: 0.003
 
-    action_w_noise_amplitude: 0.5
+    action_w_noise_amplitude: 0.3
 
     gamma: 0.99
     betas: [0.1, 1, 2]
@@ -26,18 +26,18 @@ agent_params:
     epsilon:
       start: 1.0
       end: 0.05
-      decay: 2_000_000
+      decay: 1_500_000
 
 estimator:
   model: OpinionNetCommonAB
   args_:
     lin_hidden_size: 64
-    c_tanh_scale: 2
     softplus_beta: 1.0
-    wstar_eps: 0.005
-    A_min: 0.02               
-    A_max: 2.0
+    wstar_eps: 0.000001
+    A_min: null              
+    A_max: 50.0
     b_tanh_scale: null
+    c_tanh_scale: null
 
 optim:
   name: Adam

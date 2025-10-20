@@ -289,7 +289,6 @@ class AgentDQN:
             decay=eps_settings["decay"],
             eps_decay_start=self.replay_start_size,
         )
-        self.action_temperature = agent_params.get("action_temperature", 0.6)
 
         self._read_and_init_envs()  # sets up in_features etc...
 
@@ -308,30 +307,36 @@ class AgentDQN:
 
     def _init_early_stopping_vars(self):
         # ---- Early stop: rolling metrics & thresholds tuned for your failure mode ----
-        W = 8  # rolling window (log points, not steps)
+        W = 10  # was 8; slightly smoother rolling stats (log points, not steps)
         self._es_win = {
             "H": deque(maxlen=W),  # action entropy
             "frac_cap": deque(maxlen=W),  # frac_u>0.4
             "td_p95": deque(maxlen=W),  # p95(|TD|)
-            "clamp_pct": deque(maxlen=W),  # fraction of clamped targets
+            "clamp_pct": deque(maxlen=W),
             "tgt_drift": deque(maxlen=W),  # ||target-source||/||source||
-            "max_q": deque(maxlen=W),  # mean max-Q
+            "max_q": deque(maxlen=W),
         }
 
         # Derived entropy baseline ~ uniform
         self._H_uniform = math.log(self.num_actions) if self.num_actions > 0 else 0.0
 
-        # Tuned thresholds (conservative; trip only if several agree)
         self._es_cfg = {
-            # action saturation / collapse
-            "min_entropy_frac": 0.15,  # H < 0.15 * log(N)
-            "high_frac_cap": 0.70,  # >70% of actions over 0.4
-            # instability / blow-up
-            "clamp_pct_high": 0.55,  # >55% clamped targets on average
-            "td_p95_jump": 2.0,  # last-half median > 2x first-half median
-            "tgt_drift_high": 0.30,  # median relative drift > 0.30
-            # patience in log points (not epochs)
-            "pat_points": 4,  # need at least this many points in window
+            # action collapse
+            "min_entropy_frac": 0.22,   # was 0.15  → trip sooner if entropy too low
+            "high_frac_cap": 0.65,      # was 0.70  → treat saturation as “bad” earlier
+
+            # TD/target instability
+            "clamp_pct_high": 0.50,     
+            "td_p95_jump": 1.6,         
+            "tgt_drift_high": 0.22,     
+
+            # patience in log points (not steps/epochs)
+            "pat_points": 5,            # was 4     → require a few points, still quick
+
+            # NEW hard tripwires (absolute guards)
+            "max_q_abs": 1500,           # stop if mean max-Q goes way out of range
+            "A_floor_ratio": 0.90,      # if ~all agents sit at A_min, treat as degeneracy
+            "no_prog_mult": 0.95,       # entropy median must improve by ≥5% across halves
         }
 
         self._nonfinite_counter = 0
@@ -379,44 +384,51 @@ class AgentDQN:
         return last / first
 
     def _early_stop_maybe(self):
-        # need enough log points
         need = self._es_cfg["pat_points"]
         if any(len(self._es_win[k]) < need for k in self._es_win):
             return
 
-        H_u = self._H_uniform if self._H_uniform > 0 else 1.0
-        H_med = self._median(self._es_win["H"])
-        frac_med = self._median(self._es_win["frac_cap"])
-        clamp_med = self._median(self._es_win["clamp_pct"])
+        H_u = max(self._H_uniform, 1.0)
+        H_med     = self._median(self._es_win["H"])
+        frac_med  = self._median(self._es_win["frac_cap"])
+        clamp_med = self._median(self._es_win["clamp_pct"])   # here: A at floor
         drift_med = self._median(self._es_win["tgt_drift"])
         td_growth = self._es_trend_ratio(self._es_win["td_p95"])
 
-        # Signals (each boolean)
+        # Hard tripwire 1: Q explosion
+        max_q_med = self._median(self._es_win["max_q"])
+        if (max_q_med is not None) and (max_q_med > self._es_cfg["max_q_abs"]):
+            self.logger.error(f"[EARLY STOP] Q explosion: median max_q={max_q_med:.3e} > {self._es_cfg['max_q_abs']}")
+            raise EarlyStop("Q explosion.")
+
+        # Hard tripwire 2: A stuck at floor
+        if (clamp_med is not None) and (clamp_med >= self._es_cfg["A_floor_ratio"]):
+            self.logger.error(f"[EARLY STOP] A at floor: clamp_med={clamp_med:.2f} >= {self._es_cfg['A_floor_ratio']}")
+            raise EarlyStop("A_diag collapsed to floor.")
+
+        # Composite signals
         S_action_collapse = (
-            (H_med is not None)
-            and (H_med < self._es_cfg["min_entropy_frac"] * H_u)
-            and (frac_med is not None)
-            and (frac_med > self._es_cfg["high_frac_cap"])
+            (H_med is not None) and (H_med < self._es_cfg["min_entropy_frac"] * H_u)
+            and (frac_med is not None) and (frac_med > self._es_cfg["high_frac_cap"])
         )
-
         S_target_instab = (
-            (clamp_med is not None)
-            and (clamp_med > self._es_cfg["clamp_pct_high"])
-            and (td_growth is not None)
-            and (td_growth > self._es_cfg["td_p95_jump"])
+            (clamp_med is not None) and (clamp_med > 0.60)   # if you want a second, stricter gate
+            and (td_growth is not None) and (td_growth > self._es_cfg["td_p95_jump"])
         )
+        S_drift_spike = (drift_med is not None) and (drift_med > self._es_cfg["tgt_drift_high"])
 
-        S_drift_spike = (drift_med is not None) and (
-            drift_med > self._es_cfg["tgt_drift_high"]
-        )
+        # Soft "no progress": entropy should trend UP across halves by >=5%
+        H_trend = self._es_trend_ratio(self._es_win["H"])
+        S_no_progress = (H_trend is not None) and (H_trend < self._es_cfg["no_prog_mult"])
 
-        # Trip only when at least two collapse signals are ON together for sustained points
-        if sum([S_action_collapse, S_target_instab, S_drift_spike]) >= 2:
+        # Trip if (1) any hard tripwire, or (2) at least two soft collapse signals, or (3) entropy keeps degrading
+        if sum([S_action_collapse, S_target_instab, S_drift_spike]) >= 2 or S_no_progress:
             msg = (
                 "[EARLY STOP] Likely irrecoverable collapse:\n"
-                f"- action_collapse={S_action_collapse} (H_med={H_med:.3g}, frac_cap_med={frac_med:.3g})\n"
-                f"- target_instab={S_target_instab} (clamp_med={clamp_med:.3g}, td_growth={None if td_growth is None else round(td_growth,3)})\n"
-                f"- drift_spike={S_drift_spike} (drift_med={drift_med:.3g})"
+                f"- action_collapse={S_action_collapse} (H_med={None if H_med is None else round(H_med,3)}, frac_cap_med={None if frac_med is None else round(frac_med,3)})\n"
+                f"- target_instab={S_target_instab} (A_floor_med={None if clamp_med is None else round(clamp_med,3)}, td_growth={None if td_growth is None else round(td_growth,3)})\n"
+                f"- drift_spike={S_drift_spike} (drift_med={None if drift_med is None else round(drift_med,3)})\n"
+                f"- no_progress={S_no_progress} (H_trend={None if H_trend is None else round(H_trend,3)})"
             )
             self.logger.error(msg)
             raise EarlyStop("Collapse criteria satisfied.")
@@ -496,9 +508,61 @@ class AgentDQN:
         self.optimizer = optim.Adam(
             self.policy_model.parameters(), **optimizer_settings["args"]
         )
+        
+        self._log_model_hparams(self.policy_model, tag="policy_model")
+        self._log_model_hparams(self.target_model, tag="target_model")
+        self._log_optimizer()
 
         self.logger.info("Initialized networks and optimizer.")
 
+    def _log_model_hparams(self, model, tag: str = "policy_model"):
+        """Log resolved hyperparameters and param count for the given model."""
+        try:
+            # common attributes for OpinionNet and OpinionNetCommonAB
+            keys = [
+                "nr_agents", "nr_betas", "lin_hidden_size",
+                "c_tanh_scale", "softplus_beta", "wstar_eps",
+                "return_w_star_default", "A_min", "A_max", "b_tanh_scale",
+            ]
+            attrs = {}
+            for k in keys:
+                if hasattr(model, k):
+                    attrs[k] = getattr(model, k)
+
+            num_params = sum(p.numel() for p in model.parameters())
+            cls_name = model.__class__.__name__
+
+            self.logger.info(
+                "[%s] class=%s | hyperparams=%s | #params=%s",
+                tag, cls_name, attrs, f"{num_params:,}"
+            )
+        except Exception as e:
+            self.logger.warning("Failed to log model hparams for %s: %s", tag, e)
+
+
+    def _log_optimizer(self):
+        """Log key optimizer settings for the main optimizer (group 0)."""
+        try:
+            if not hasattr(self, "optimizer") or self.optimizer is None:
+                self.logger.warning("No optimizer to log.")
+                return
+
+            # assume single param group (typical for Adam)
+            g0 = self.optimizer.param_groups[0] if self.optimizer.param_groups else {}
+            # betas usually live in the param group for Adam
+            betas = g0.get("betas", None)
+
+            opt_info = {
+                "type": self.optimizer.__class__.__name__,
+                "lr": g0.get("lr", None),
+                "betas": betas,
+                "eps": g0.get("eps", None),
+                "weight_decay": g0.get("weight_decay", None),
+            }
+            self.logger.info("Optimizer settings: %s", opt_info)
+        except Exception as e:
+            self.logger.warning("Failed to log optimizer settings: %s", e)
+            
     @torch.no_grad()
     def _soft_update(self, tau):
         # measure drift BEFORE update (occasionally)
@@ -777,7 +841,7 @@ class AgentDQN:
                 )  # (B, N)
 
                 u = self.policy_model.compute_action_from_w(
-                    w_rand_noisy, rand_beta_values, temperature=self.action_temperature
+                    w_rand_noisy, rand_beta_values
                 )
 
                 w_full = torch.zeros_like(w_star)
@@ -821,7 +885,7 @@ class AgentDQN:
             )  # (B, N)
 
             u = self.policy_model.compute_action_from_w(
-                optimal_w, beta_values, temperature=self.action_temperature
+                optimal_w, beta_values
             )
 
             w_full = torch.zeros_like(w_star)
@@ -925,9 +989,23 @@ class AgentDQN:
                     td_p95 = robust_quantile(td_abs, 0.95).item()
                     A_min = A_diag.min().item()
                     A_max = A_diag.max().item()
+                    A_floor = getattr(self.policy_model, "A_min", None)
+                    if A_floor is not None:
+                        with torch.no_grad():
+                            floor_hits = (A_diag <= (A_floor + 1e-8)).float().mean().item()
+                    else:
+                        floor_hits = 0.0
+                    self._es_update(clamp_pct=floor_hits)  # repurpose clamp_pct for "A at floor"
                     b_mean = b.abs().mean().item()
                     c_mean = c.abs().mean().item()
                     self._es_update(td_p95=td_p95, clamp_pct=clamp_p)
+                    A_min_cfg = getattr(self.policy_model, "A_min", None)
+                    if A_min_cfg is not None:
+                        eps = 1e-6
+                        # fraction of A elements that sit at (or very near) the configured floor
+                        a_floor_frac = (A_diag <= (A_min_cfg + eps)).float().mean().item()
+                        self._es_update(clamp_pct=a_floor_frac)
+
                 self.logger.info(
                     f"learn@t={self.t} | q_sa={qsa_m:.3g} | tgt={tgt_m:.3g} "
                     f"| td={td_m:.3g} | |td|_p95={td_p95:.3g} "
