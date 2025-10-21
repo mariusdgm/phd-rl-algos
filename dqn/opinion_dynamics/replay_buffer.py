@@ -30,7 +30,7 @@ class ReplayBuffer:
         next_state = np.array(next_state).reshape(-1)
         
         beta_idx, w = action
-        beta_idx = np.array(beta_idx, dtype=np.int64)
+        beta_idx = int(np.asarray(beta_idx).reshape(-1)[0])
         
         # storage contract: w is (J, N)
         assert w.ndim == 2, f"Expected w to be (J, N), got {w.shape}"

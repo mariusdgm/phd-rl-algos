@@ -11,12 +11,12 @@ agent_params:
     validation_step_cnt: 5_000
     validation_epsilon: 0.05
 
-    replay_start_size: 2_000
+    replay_start_size: 10_000
     batch_size: 128
     training_freq: 4
     
     target_model_update_freq: 1_000
-    target_soft_tau: 0.003
+    target_soft_tau: 0.0001
 
     action_w_noise_amplitude: 0.3
 
@@ -26,7 +26,7 @@ agent_params:
     epsilon:
       start: 1.0
       end: 0.05
-      decay: 1_500_000
+      decay: 1_000_000
 
 estimator:
   model: OpinionNetCommonAB
@@ -49,5 +49,5 @@ optim:
         
 
 replay_buffer:
-  max_size: 500_000
+  max_size: 200_000
   n_step: 0

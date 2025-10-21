@@ -322,21 +322,18 @@ class AgentDQN:
 
         self._es_cfg = {
             # action collapse
-            "min_entropy_frac": 0.22,   # was 0.15  → trip sooner if entropy too low
-            "high_frac_cap": 0.65,      # was 0.70  → treat saturation as “bad” earlier
-
+            "min_entropy_frac": 0.22,  # was 0.15  → trip sooner if entropy too low
+            "high_frac_cap": 0.65,  # was 0.70  → treat saturation as “bad” earlier
             # TD/target instability
-            "clamp_pct_high": 0.50,     
-            "td_p95_jump": 1.6,         
-            "tgt_drift_high": 0.22,     
-
+            "clamp_pct_high": 0.50,
+            "td_p95_jump": 1.6,
+            "tgt_drift_high": 0.22,
             # patience in log points (not steps/epochs)
-            "pat_points": 5,            # was 4     → require a few points, still quick
-
+            "pat_points": 5,  # was 4     → require a few points, still quick
             # NEW hard tripwires (absolute guards)
-            "max_q_abs": 1500,           # stop if mean max-Q goes way out of range
-            "A_floor_ratio": 0.90,      # if ~all agents sit at A_min, treat as degeneracy
-            "no_prog_mult": 0.95,       # entropy median must improve by ≥5% across halves
+            "max_q_abs": 1500,  # stop if mean max-Q goes way out of range
+            "A_floor_ratio": 0.90,  # if ~all agents sit at A_min, treat as degeneracy
+            "no_prog_mult": 0.95,  # entropy median must improve by ≥5% across halves
         }
 
         self._nonfinite_counter = 0
@@ -389,40 +386,55 @@ class AgentDQN:
             return
 
         H_u = max(self._H_uniform, 1.0)
-        H_med     = self._median(self._es_win["H"])
-        frac_med  = self._median(self._es_win["frac_cap"])
-        clamp_med = self._median(self._es_win["clamp_pct"])   # here: A at floor
+        H_med = self._median(self._es_win["H"])
+        frac_med = self._median(self._es_win["frac_cap"])
+        clamp_med = self._median(self._es_win["clamp_pct"])  # here: A at floor
         drift_med = self._median(self._es_win["tgt_drift"])
         td_growth = self._es_trend_ratio(self._es_win["td_p95"])
 
         # Hard tripwire 1: Q explosion
         max_q_med = self._median(self._es_win["max_q"])
         if (max_q_med is not None) and (max_q_med > self._es_cfg["max_q_abs"]):
-            self.logger.error(f"[EARLY STOP] Q explosion: median max_q={max_q_med:.3e} > {self._es_cfg['max_q_abs']}")
+            self.logger.error(
+                f"[EARLY STOP] Q explosion: median max_q={max_q_med:.3e} > {self._es_cfg['max_q_abs']}"
+            )
             raise EarlyStop("Q explosion.")
 
         # Hard tripwire 2: A stuck at floor
         if (clamp_med is not None) and (clamp_med >= self._es_cfg["A_floor_ratio"]):
-            self.logger.error(f"[EARLY STOP] A at floor: clamp_med={clamp_med:.2f} >= {self._es_cfg['A_floor_ratio']}")
+            self.logger.error(
+                f"[EARLY STOP] A at floor: clamp_med={clamp_med:.2f} >= {self._es_cfg['A_floor_ratio']}"
+            )
             raise EarlyStop("A_diag collapsed to floor.")
 
         # Composite signals
         S_action_collapse = (
-            (H_med is not None) and (H_med < self._es_cfg["min_entropy_frac"] * H_u)
-            and (frac_med is not None) and (frac_med > self._es_cfg["high_frac_cap"])
+            (H_med is not None)
+            and (H_med < self._es_cfg["min_entropy_frac"] * H_u)
+            and (frac_med is not None)
+            and (frac_med > self._es_cfg["high_frac_cap"])
         )
         S_target_instab = (
-            (clamp_med is not None) and (clamp_med > 0.60)   # if you want a second, stricter gate
-            and (td_growth is not None) and (td_growth > self._es_cfg["td_p95_jump"])
+            (clamp_med is not None)
+            and (clamp_med > 0.60)  # if you want a second, stricter gate
+            and (td_growth is not None)
+            and (td_growth > self._es_cfg["td_p95_jump"])
         )
-        S_drift_spike = (drift_med is not None) and (drift_med > self._es_cfg["tgt_drift_high"])
+        S_drift_spike = (drift_med is not None) and (
+            drift_med > self._es_cfg["tgt_drift_high"]
+        )
 
         # Soft "no progress": entropy should trend UP across halves by >=5%
         H_trend = self._es_trend_ratio(self._es_win["H"])
-        S_no_progress = (H_trend is not None) and (H_trend < self._es_cfg["no_prog_mult"])
+        S_no_progress = (H_trend is not None) and (
+            H_trend < self._es_cfg["no_prog_mult"]
+        )
 
         # Trip if (1) any hard tripwire, or (2) at least two soft collapse signals, or (3) entropy keeps degrading
-        if sum([S_action_collapse, S_target_instab, S_drift_spike]) >= 2 or S_no_progress:
+        if (
+            sum([S_action_collapse, S_target_instab, S_drift_spike]) >= 2
+            or S_no_progress
+        ):
             msg = (
                 "[EARLY STOP] Likely irrecoverable collapse:\n"
                 f"- action_collapse={S_action_collapse} (H_med={None if H_med is None else round(H_med,3)}, frac_cap_med={None if frac_med is None else round(frac_med,3)})\n"
@@ -508,61 +520,55 @@ class AgentDQN:
         self.optimizer = optim.Adam(
             self.policy_model.parameters(), **optimizer_settings["args"]
         )
-        
-        self._log_model_hparams(self.policy_model, tag="policy_model")
-        self._log_model_hparams(self.target_model, tag="target_model")
-        self._log_optimizer()
+
+        self._log_model_and_optim_summaries()
 
         self.logger.info("Initialized networks and optimizer.")
 
-    def _log_model_hparams(self, model, tag: str = "policy_model"):
-        """Log resolved hyperparameters and param count for the given model."""
+    def _log_model_and_optim_summaries(self):
+        """Log the key hyperparameters of the policy model and optimizer at init time."""
         try:
-            # common attributes for OpinionNet and OpinionNetCommonAB
-            keys = [
-                "nr_agents", "nr_betas", "lin_hidden_size",
-                "c_tanh_scale", "softplus_beta", "wstar_eps",
-                "return_w_star_default", "A_min", "A_max", "b_tanh_scale",
-            ]
-            attrs = {}
-            for k in keys:
-                if hasattr(model, k):
-                    attrs[k] = getattr(model, k)
+            pm = self.policy_model
+            # Model summary (works for OpinionNet and OpinionNetCommonAB)
+            model_info = {
+                "model_class": pm.__class__.__name__,
+                "nr_agents": getattr(pm, "nr_agents", None),
+                "nr_betas": getattr(pm, "nr_betas", None),
+                "lin_hidden_size": getattr(pm, "lin_hidden_size", None),
+                "softplus_beta": getattr(pm, "softplus_beta", None),
+                "wstar_eps": getattr(pm, "wstar_eps", None),
+                "A_min": getattr(pm, "A_min", None),
+                "A_max": getattr(pm, "A_max", None),
+                "b_tanh_scale": getattr(pm, "b_tanh_scale", None),
+                "c_tanh_scale": getattr(pm, "c_tanh_scale", None),
+            }
 
-            num_params = sum(p.numel() for p in model.parameters())
-            cls_name = model.__class__.__name__
+            # Optimizer summary (first param group)
+            og = self.optimizer.param_groups[0] if self.optimizer.param_groups else {}
+            optim_info = {
+                "optim_class": self.optimizer.__class__.__name__,
+                "lr": og.get("lr", None),
+                "betas": og.get("betas", None),
+                "eps": og.get("eps", None),
+                "weight_decay": og.get("weight_decay", None),
+            }
+
+            # Count params
+            total_params = sum(p.numel() for p in pm.parameters())
+            trainable_params = sum(
+                p.numel() for p in pm.parameters() if p.requires_grad
+            )
 
             self.logger.info(
-                "[%s] class=%s | hyperparams=%s | #params=%s",
-                tag, cls_name, attrs, f"{num_params:,}"
+                "[INIT] Model config: %s | Optimizer: %s | params: total=%d, trainable=%d",
+                str(model_info),
+                str(optim_info),
+                total_params,
+                trainable_params,
             )
         except Exception as e:
-            self.logger.warning("Failed to log model hparams for %s: %s", tag, e)
+            self.logger.warning(f"[INIT] Failed to log model/optim summary: {e}")
 
-
-    def _log_optimizer(self):
-        """Log key optimizer settings for the main optimizer (group 0)."""
-        try:
-            if not hasattr(self, "optimizer") or self.optimizer is None:
-                self.logger.warning("No optimizer to log.")
-                return
-
-            # assume single param group (typical for Adam)
-            g0 = self.optimizer.param_groups[0] if self.optimizer.param_groups else {}
-            # betas usually live in the param group for Adam
-            betas = g0.get("betas", None)
-
-            opt_info = {
-                "type": self.optimizer.__class__.__name__,
-                "lr": g0.get("lr", None),
-                "betas": betas,
-                "eps": g0.get("eps", None),
-                "weight_decay": g0.get("weight_decay", None),
-            }
-            self.logger.info("Optimizer settings: %s", opt_info)
-        except Exception as e:
-            self.logger.warning("Failed to log optimizer settings: %s", e)
-            
     @torch.no_grad()
     def _soft_update(self, tau):
         # measure drift BEFORE update (occasionally)
@@ -786,31 +792,36 @@ class AgentDQN:
         self, state: torch.Tensor, epsilon: float = None, random_action: bool = False
     ):
         """
-        Select an action by evaluating the Q-function over the β grid.
-
         Returns:
-            Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[float]]:
-                - u: continuous action (B, N)
-                - beta_idx: index of selected beta (B,)
-                - w: all candidate weight vectors (B, J, N)
-                - Q-value (scalar)
+            u: np.ndarray (B, N)        -- continuous action (allocations)
+            beta_idx: np.ndarray (B,)   -- chosen beta indices
+            w_full: np.ndarray (B, J, N)-- logits for all betas (zeros except chosen row)
+            q_scalar: float             -- mean max-Q for logging
         """
         if state.dim() == 1:
             state = state.unsqueeze(0)
 
+        device = next(self.policy_model.parameters()).device
+        dtype = torch.float32
+
+        state = state.to(device=device, dtype=dtype)
+
         with torch.no_grad():
             # === Forward pass ===
             abc_model = self.policy_model(state)
-            A_diag, b, c = abc_model["A_diag"], abc_model["b"], abc_model["c"]
+            A_diag, b, c = (
+                abc_model["A_diag"],
+                abc_model["b"],
+                abc_model["c"],
+            )  # (B,J,N), (B,J,N), (B,J)
             B, J, N = A_diag.shape
 
             assert b.shape == (B, J, N), f"b shape mismatch: {b.shape}"
             assert c.shape == (B, J), f"c shape mismatch: {c.shape}"
 
-            w_star = self.policy_model.compute_w_star(A_diag, b)  # (B, J, N)
-            q_values = self.policy_model.compute_q_values(
-                w_star, A_diag, b, c
-            )  # (B, J)
+            # logits (pre-softmax) per beta/agent
+            w_star = self.policy_model.compute_w_star(A_diag, b)  # (B,J,N)
+            q_values = self.policy_model.compute_q_values(w_star, A_diag, b, c)  # (B,J)
 
             assert w_star.shape == (B, J, N), f"w_star shape mismatch: {w_star.shape}"
             assert q_values.shape == (
@@ -821,35 +832,54 @@ class AgentDQN:
             eps = 0.0 if epsilon is None else float(epsilon)
             noise_amplitude = self.action_w_noise_amplitude * eps
 
+            # Prepare betas on correct device/dtype
+            betas_t = torch.tensor(self.betas, device=device, dtype=dtype)  # (J,)
+
             # === RANDOM ACTION BRANCH ===
             if random_action or (epsilon is not None and np.random.rand() < epsilon):
-                rand_idx = torch.randint(low=0, high=J, size=(B,), dtype=torch.long)
+                rand_idx = torch.randint(
+                    low=0, high=J, size=(B,), dtype=torch.long, device=device
+                )
+                rand_idx_exp = (
+                    rand_idx.unsqueeze(1).unsqueeze(2).expand(-1, 1, N)
+                )  # (B,1,N)
 
-                w_rand = w_star.gather(
-                    1, rand_idx.unsqueeze(1).unsqueeze(2).expand(-1, 1, N)
-                ).squeeze(
-                    1
-                )  # (B, N)
+                # chosen logits
+                w_rand = w_star.gather(1, rand_idx_exp).squeeze(1)  # (B,N)
                 assert w_rand.shape == (B, N), f"w_rand shape: {w_rand.shape}"
 
-                w_rand_noisy = self.policy_model.apply_action_noise(
-                    w_rand, noise_amplitude
-                )
+                # (optional) exploration noise on logits
+                if noise_amplitude > 0.0:
+                    w_rand = self.policy_model.apply_action_noise(
+                        w_rand, noise_amplitude
+                    )
 
+                # build ws_to_store: zeros except chosen β row
+                ws_to_store = torch.zeros_like(w_star)  # (B,J,N)
+                ws_to_store.scatter_(1, rand_idx_exp, w_rand.unsqueeze(1))
+
+                # turn logits into allocation
                 rand_beta_values = (
-                    torch.tensor(self.betas)[rand_idx].unsqueeze(1).expand(-1, N)
-                )  # (B, N)
-
+                    betas_t.index_select(0, rand_idx).unsqueeze(1).expand(-1, N)
+                )  # (B,N)
                 u = self.policy_model.compute_action_from_w(
-                    w_rand_noisy, rand_beta_values
-                )
+                    w_rand, rand_beta_values
+                )  # (B,N)
 
-                w_full = torch.zeros_like(w_star)
-                w_full.scatter_(
-                    1,
-                    rand_idx.reshape(-1, 1, 1).expand(-1, 1, N),
-                    w_rand_noisy.unsqueeze(1),
-                )
+                # quick sanity: stored row shouldn't look like probs
+                if self._should_log():
+                    rowsums = w_rand.sum(dim=1)
+                    nonneg = (w_rand >= -1e-8).all().item()
+                    looks_prob = (
+                        torch.allclose(
+                            rowsums, torch.ones_like(rowsums), rtol=1e-2, atol=1e-2
+                        )
+                        and nonneg
+                    )
+                    if looks_prob:
+                        self.logger.warning(
+                            "[SANITY] Stored w looks probability-like; expected logits."
+                        )
 
                 q_rand = q_values.gather(1, rand_idx.unsqueeze(1)).squeeze(1)  # (B,)
                 q_rand_mean = q_rand.mean(dim=0)  # scalar
@@ -857,165 +887,91 @@ class AgentDQN:
                 return (
                     u.cpu().numpy(),
                     rand_idx.cpu().numpy().astype(np.int64),
-                    w_full.cpu().numpy(),
+                    ws_to_store.cpu().numpy(),
                     q_rand_mean.item(),
                 )
 
             # === GREEDY ACTION BRANCH ===
             max_q, beta_idx = q_values.max(dim=1)  # (B,)
-            beta_idx_exp = beta_idx.unsqueeze(1).unsqueeze(2).expand(-1, 1, N)
+            beta_idx_exp = (
+                beta_idx.unsqueeze(1).unsqueeze(2).expand(-1, 1, N)
+            )  # (B,1,N)
 
-            assert beta_idx.shape == (B,), f"beta_idx shape: {beta_idx.shape}"
-            assert beta_idx_exp.shape == (
-                B,
-                1,
-                N,
-            ), f"beta_idx_exp shape: {beta_idx_exp.shape}"
+            # chosen logits
+            optimal_w = w_star.gather(1, beta_idx_exp).squeeze(1)  # (B,N)
 
-            optimal_w = w_star.gather(1, beta_idx_exp).squeeze(1)  # (B, N)
+            # (optional) exploration noise on greedy path
+            if noise_amplitude > 0.0:
+                optimal_w = self.policy_model.apply_action_noise(
+                    optimal_w, noise_amplitude
+                )
 
-            optimal_w = self.policy_model.apply_action_noise(optimal_w, noise_amplitude)
+            # store logits: zeros except chosen β row
+            ws_to_store = torch.zeros_like(w_star)  # (B,J,N)
+            ws_to_store.scatter_(1, beta_idx_exp, optimal_w.unsqueeze(1))
 
             beta_values = (
-                torch.tensor(
-                    [self.betas[int(i)] for i in beta_idx], dtype=torch.float32
+                betas_t.index_select(0, beta_idx).unsqueeze(1).expand(-1, N)
+            )  # (B,N)
+            u = self.policy_model.compute_action_from_w(optimal_w, beta_values)  # (B,N)
+
+            # sanity: stored row shouldn't look like probs
+            if self._should_log():
+                rowsums = optimal_w.sum(dim=1)
+                nonneg = (optimal_w >= -1e-8).all().item()
+                looks_prob = (
+                    torch.allclose(
+                        rowsums, torch.ones_like(rowsums), rtol=1e-2, atol=1e-2
+                    )
+                    and nonneg
                 )
-                .unsqueeze(1)
-                .expand(-1, N)
-            )  # (B, N)
-
-            u = self.policy_model.compute_action_from_w(
-                optimal_w, beta_values
-            )
-
-            w_full = torch.zeros_like(w_star)
-            w_full.scatter_(1, beta_idx_exp, optimal_w.unsqueeze(1))
+                if looks_prob:
+                    self.logger.warning(
+                        "[SANITY] Stored w looks probability-like; expected logits."
+                    )
 
             assert u.shape == (B, N), f"u shape: {u.shape}"
 
             return (
                 u.cpu().numpy(),
                 beta_idx.cpu().numpy().astype(np.int64),
-                w_full.cpu().numpy(),
+                ws_to_store.cpu().numpy(),
                 max_q.mean().item(),
             )
 
     def model_learn(self, sample, debug=True):
         """TD learning with Double DQN targets, Huber loss, grad clipping, and soft target updates."""
-        # Unpack (already tensors from ReplayBuffer.sample)
+        # Unpack & move to device
         states, (beta_indices, ws), rewards, next_states, dones = sample
-
         device = next(self.policy_model.parameters()).device
         B = len(states)
 
-        # Ensure correct dtypes/shapes on the right device
         states = states.to(device=device, dtype=torch.float32)
         next_states = next_states.to(device=device, dtype=torch.float32)
         beta_indices = beta_indices.to(device=device, dtype=torch.long).view(-1)
-        ws = ws.to(device=device, dtype=torch.float32)  # (B, J, N)
+        ws = ws.to(device=device, dtype=torch.float32)  # (B,J,N)
         rewards = rewards.to(device=device, dtype=torch.float32).view(B, 1)
         dones = dones.to(device=device, dtype=torch.float32).view(B, 1)
 
-        # ---- Q(s, β) using the online network ----
-        self.policy_model.train()
-        abc = self.policy_model(states)
-        A_diag, b, c = (
-            abc["A_diag"],
-            abc["b"],
-            abc["c"],
-        )  # A_diag/b: (B, J, N), c: (B, J)
+        # Contract checks for ws
+        # (keeps replay buffer dumb, but training strict)
+        # If this trips, the bug is upstream (select_action / append).
+        self._assert_ws_contract(ws, beta_indices)
+        self._warn_if_ws_looks_probabilities(ws, beta_indices)
 
-        assert ws.shape == A_diag.shape, f"ws: {ws.shape}, A_diag: {A_diag.shape}"
+        # Online Q(s,β) for stored ws
+        q_vals, A, b, c = self._online_q_for_ws(states, ws)
+        q_sa = q_vals.gather(1, beta_indices.unsqueeze(1))  # (B,1)
 
-        q_values = self.policy_model.compute_q_values(ws, A_diag, b, c)  # (B, J)
-        q_sa = q_values.gather(1, beta_indices.unsqueeze(1))  # (B, 1)
-
-        # ---- Double DQN target ----
+        # Double DQN target
         with torch.no_grad():
-            # Online selects β'
-            abc_next_online = self.policy_model(next_states)
-            A_do, b_o, c_o = (
-                abc_next_online["A_diag"],
-                abc_next_online["b"],
-                abc_next_online["c"],
-            )
-            w_star_next_online = self.policy_model.compute_w_star(A_do, b_o)
-            q_next_online = self.policy_model.compute_q_values(
-                w_star_next_online, A_do, b_o, c_o
-            )  # (B, J)
-            next_beta_idx = q_next_online.argmax(dim=1, keepdim=True)  # (B, 1)
+            max_next_q = self._double_dqn_target(next_states)  # (B,1)
+            target = rewards + self.gamma * (1.0 - dones) * max_next_q  # (B,1)
 
-            # Target evaluates that choice
-            abc_next_tgt = self.target_model(next_states)
-            A_dt, b_t, c_t = (
-                abc_next_tgt["A_diag"],
-                abc_next_tgt["b"],
-                abc_next_tgt["c"],
-            )
-            w_star_next_tgt = self.target_model.compute_w_star(A_dt, b_t)
-            q_next_target = self.target_model.compute_q_values(
-                w_star_next_tgt, A_dt, b_t, c_t
-            )  # (B, J)
-            max_next_q = q_next_target.gather(1, next_beta_idx)  # (B, 1)
+        # Log batch stats (compact)
+        self._maybe(lambda: self._log_learn_batch_stats(q_sa, target, A, b, c))
 
-            target = rewards + self.gamma * (1.0 - dones) * max_next_q  # (B, 1)
-
-            # Disabled clamping
-            # Robust clamp
-            # raw_clip = robust_quantile(target.abs(), 0.98).item()
-            # new_clip = max(raw_clip, 1e-8)  # avoid zero / denorms
-            # if self._tgt_clip_ema is None:
-            #     self._tgt_clip_ema = new_clip
-            # else:
-            #     self._tgt_clip_ema = (
-            #         1.0 - self._tgt_clip_alpha
-            #     ) * self._tgt_clip_ema + self._tgt_clip_alpha * new_clip
-
-            # clamp_val = float(self._tgt_clip_ema)
-            # target = target.clamp(-clamp_val, clamp_val)
-            # clamp_p = (target.abs() >= (clamp_val - 1e-12)).float().mean().item()
-
-            clamp_p = 0.0
-
-        # Optional logging stats
-        if self._should_log():
-            try:
-                with torch.no_grad():
-                    td = target - q_sa
-                    td_abs = td.abs()
-                    qsa_m = q_sa.mean().item()
-                    tgt_m = target.mean().item()
-                    td_m = td.mean().item()
-                    td_p95 = robust_quantile(td_abs, 0.95).item()
-                    A_min = A_diag.min().item()
-                    A_max = A_diag.max().item()
-                    A_floor = getattr(self.policy_model, "A_min", None)
-                    if A_floor is not None:
-                        with torch.no_grad():
-                            floor_hits = (A_diag <= (A_floor + 1e-8)).float().mean().item()
-                    else:
-                        floor_hits = 0.0
-                    self._es_update(clamp_pct=floor_hits)  # repurpose clamp_pct for "A at floor"
-                    b_mean = b.abs().mean().item()
-                    c_mean = c.abs().mean().item()
-                    self._es_update(td_p95=td_p95, clamp_pct=clamp_p)
-                    A_min_cfg = getattr(self.policy_model, "A_min", None)
-                    if A_min_cfg is not None:
-                        eps = 1e-6
-                        # fraction of A elements that sit at (or very near) the configured floor
-                        a_floor_frac = (A_diag <= (A_min_cfg + eps)).float().mean().item()
-                        self._es_update(clamp_pct=a_floor_frac)
-
-                self.logger.info(
-                    f"learn@t={self.t} | q_sa={qsa_m:.3g} | tgt={tgt_m:.3g} "
-                    f"| td={td_m:.3g} | |td|_p95={td_p95:.3g} "
-                    f"| A[min,max]=[{A_min:.3g},{A_max:.3g}] | |b|_mean={b_mean:.3g} | |c|_mean={c_mean:.3g} "
-                    f"| clamp%={clamp_p*100:.2f}"
-                )
-            except Exception as e:
-                self.logger.debug(f"[learn-log-skip] {e}")
-
-        # ---- Loss & backward ----
+        # Loss + backward
         loss = F.smooth_l1_loss(q_sa, target)
         self.optimizer.zero_grad()
         if not torch.isfinite(loss):
@@ -1025,13 +981,12 @@ class AgentDQN:
             raise EarlyStop("Non-finite loss encountered.")
         loss.backward()
 
-        # Always do a quick non-finite gradient check (cheap, early exit)
+        # Non-finite gradients quick check
         bad_grad = False
         for p in self.policy_model.parameters():
             if p.grad is not None and not torch.isfinite(p.grad).all():
                 bad_grad = True
                 break
-
         if bad_grad:
             self._nonfinite_counter += 1
             if self._nonfinite_counter > self.nonfinite_patience:
@@ -1039,86 +994,147 @@ class AgentDQN:
         else:
             self._nonfinite_counter = 0
 
-        # Detailed grad norms only on log steps
-        grad_norm_pre = grad_norm_post = None
-        if self._should_log():
-            try:
-                total_sq = 0.0
-                for p in self.policy_model.parameters():
-                    if p.grad is not None:
-                        g = p.grad.detach()
-                        total_sq += g.pow(2).sum().item()
-                grad_norm_pre = total_sq**0.5
-            except Exception:
-                pass
+        # Grad norms (only on log step)
+        grad_norm_pre = None
+        self._maybe(lambda: globals().__setitem__("__gnp", self._grad_norm()))
+        grad_norm_pre = globals().pop("__gnp", None)
 
         torch.nn.utils.clip_grad_norm_(self.policy_model.parameters(), 10.0)
         self.optimizer.step()
 
-        if self._should_log():
-            try:
-                total_sq = 0.0
-                for p in self.policy_model.parameters():
-                    if p.grad is not None:
-                        total_sq += p.grad.detach().pow(2).sum().item()
-                grad_norm_post = total_sq**0.5
-            except Exception:
-                pass
-
-            # Current LR and param norm
-            lr_val = None
-            try:
-                lr_val = self.optimizer.param_groups[0].get("lr", None)
-            except Exception:
-                pass
-
-            param_norm = None
-            try:
-                with torch.no_grad():
-                    s = 0.0
-                    for p in self.policy_model.parameters():
-                        s += p.data.pow(2).sum().item()
-                    param_norm = s**0.5
-            except Exception:
-                pass
-
-            try:
-                self.logger.info(
-                    "optim@t=%d | loss=%.4g | grad||pre=%.3g | grad||post=%.3g | "
-                    "nonfinite_grads=%d | param||=%.3g | lr=%s"
-                    % (
-                        self.t,
-                        float(loss.item()),
-                        (grad_norm_pre if grad_norm_pre is not None else float("nan")),
-                        (
-                            grad_norm_post
-                            if grad_norm_post is not None
-                            else float("nan")
-                        ),
-                        1 if bad_grad else 0,
-                        (param_norm if param_norm is not None else float("nan")),
-                        (f"{lr_val:.3g}" if isinstance(lr_val, float) else str(lr_val)),
-                    )
-                )
-            except Exception:
-                pass
+        # Post grad norm + optim log (only on log step)
+        self._maybe(lambda: globals().__setitem__("__gnpost", self._grad_norm()))
+        grad_norm_post = globals().pop("__gnpost", None)
+        self._maybe(lambda: self._log_optim_step(loss, grad_norm_pre, grad_norm_post))
 
         # Soft target update
         self._soft_update(tau=self.tau)
 
-        # Optional param sanity check on log steps
-        if self._should_log():
-            try:
-                for name, p in self.policy_model.named_parameters():
-                    if torch.isnan(p).any() or torch.isinf(p).any():
-                        self.logger.info(
-                            f"[WARN] non-finite param in {name} @ t={self.t}"
-                        )
-                        break
-            except Exception:
-                pass
+        # Param sanity check (rare)
+        def _param_sanity():
+            for name, p in self.policy_model.named_parameters():
+                if torch.isnan(p).any() or torch.isinf(p).any():
+                    self.logger.info(f"[WARN] non-finite param in {name} @ t={self.t}")
+                    break
+
+        self._maybe(_param_sanity)
 
         return float(loss.item())
+
+    # ---------- Q(s, β) online for stored ws ----------
+    def _online_q_for_ws(self, states: torch.Tensor, ws: torch.Tensor):
+        """
+        Returns: q_sa (B,1), (A,b,c) for logging
+        """
+        self.policy_model.train()
+        abc = self.policy_model(states)
+        A, b, c = abc["A_diag"], abc["b"], abc["c"]  # (B,J,N), (B,J,N), (B,J)
+        q_vals = self.policy_model.compute_q_values(ws, A, b, c)  # (B,J)
+        return q_vals, A, b, c
+
+    # ---------- Double DQN target ----------
+    @torch.no_grad()
+    def _double_dqn_target(self, next_states: torch.Tensor) -> torch.Tensor:
+        abc_no = self.policy_model(next_states)
+        A_do, b_o, c_o = abc_no["A_diag"], abc_no["b"], abc_no["c"]
+        w_star_o = self.policy_model.compute_w_star(A_do, b_o)
+        q_next_online = self.policy_model.compute_q_values(w_star_o, A_do, b_o, c_o)
+        next_beta_idx = q_next_online.argmax(dim=1, keepdim=True)  # (B,1)
+
+        abc_nt = self.target_model(next_states)
+        A_dt, b_t, c_t = abc_nt["A_diag"], abc_nt["b"], abc_nt["c"]
+        w_star_t = self.target_model.compute_w_star(A_dt, b_t)
+        q_next_tgt = self.target_model.compute_q_values(w_star_t, A_dt, b_t, c_t)
+        return q_next_tgt.gather(1, next_beta_idx)  # (B,1)
+
+    # ---------- Batch stat logging ----------
+    def _log_learn_batch_stats(self, q_sa, target, A_diag, b, c):
+        with torch.no_grad():
+            td = target - q_sa
+            td_abs = td.abs()
+            qsa_m = q_sa.mean().item()
+            tgt_m = target.mean().item()
+            td_m = td.mean().item()
+            td_p95 = robust_quantile(td_abs, 0.95).item()
+            A_min_v = A_diag.min().item()
+            A_max_v = A_diag.max().item()
+            b_mean = b.abs().mean().item()
+            c_mean = c.abs().mean().item()
+        self._es_update(td_p95=td_p95)
+        self._log_info(
+            f"learn@t={self.t} | q_sa={qsa_m:.3g} | tgt={tgt_m:.3g} "
+            f"| td={td_m:.3g} | |td|_p95={td_p95:.3g} "
+            f"| A[min,max]=[{A_min_v:.3g},{A_max_v:.3g}] | |b|_mean={b_mean:.3g} | |c|_mean={c_mean:.3g}"
+        )
+
+    # ---------- Grad norm + optim log ----------
+    def _grad_norm(self) -> float:
+        total_sq = 0.0
+        for p in self.policy_model.parameters():
+            if p.grad is not None:
+                g = p.grad.detach()
+                total_sq += g.pow(2).sum().item()
+        return total_sq**0.5
+
+    def _log_optim_step(self, loss, grad_norm_pre, grad_norm_post):
+        try:
+            lr_val = self.optimizer.param_groups[0].get("lr", None)
+        except Exception:
+            lr_val = None
+        try:
+            with torch.no_grad():
+                s = 0.0
+                for p in self.policy_model.parameters():
+                    s += p.data.pow(2).sum().item()
+                param_norm = s**0.5
+        except Exception:
+            param_norm = float("nan")
+        self._log_info(
+            "optim@t=%d | loss=%.4g | grad||pre=%.3g | grad||post=%.3g | param||=%.3g | lr=%s"
+            % (
+                self.t,
+                float(loss.item()),
+                (grad_norm_pre if grad_norm_pre is not None else float("nan")),
+                (grad_norm_post if grad_norm_post is not None else float("nan")),
+                (param_norm if param_norm is not None else float("nan")),
+                (f"{lr_val:.3g}" if isinstance(lr_val, float) else str(lr_val)),
+            )
+        )
+
+    def _assert_ws_contract(self, ws: torch.Tensor, beta_indices: torch.Tensor):
+        B, J, N = ws.shape
+        row_sums = ws.abs().sum(dim=2)  # (B, J)
+        nonzero_rows = (row_sums > 1e-12).sum(dim=1)  # (B,)
+        if not torch.all(nonzero_rows == 1):
+            bad_idx = (nonzero_rows != 1).nonzero(as_tuple=False).flatten()
+            msg = f"[ws-contract] expected exactly one nonzero β row, got counts={nonzero_rows[bad_idx[:5]].tolist()} ..."
+            self.logger.error(msg)
+            raise AssertionError(msg)
+
+        chosen_row_sum = row_sums.gather(1, beta_indices.view(-1, 1)).squeeze(1)
+        if not torch.all(chosen_row_sum > 1e-12):
+            msg = "[ws-contract] chosen β row appears zero for some samples."
+            self.logger.error(msg)
+            raise AssertionError(msg)
+
+    def _warn_if_ws_looks_probabilities(
+        self, ws: torch.Tensor, beta_indices: torch.Tensor
+    ):
+        with torch.no_grad():
+            B, J, N = ws.shape
+            rows = ws.gather(1, beta_indices.view(-1, 1, 1).expand(-1, 1, N)).squeeze(
+                1
+            )  # (B,N)
+            rowsums = rows.sum(dim=1)
+            nonneg = (rows >= -1e-8).all(dim=1)
+            looks_prob = (
+                torch.isclose(rowsums, torch.ones_like(rowsums), rtol=1e-2, atol=1e-2)
+                & nonneg
+            )
+            if looks_prob.any():
+                self._log_warn(
+                    f"[SANITY] ws chosen rows look probability-like; expected logits."
+                )
 
     def train(self, train_epochs: int) -> True:
         """The main call for the training loop of the DQN Agent.
@@ -1229,6 +1245,31 @@ class AgentDQN:
 
         return epoch_stats
 
+    # ---------- Minimal logging helpers (no-ops when not due to log) ----------
+    def _log_enabled(self) -> bool:
+        return self._should_log()
+
+    def _log_info(self, msg: str) -> None:
+        if self._log_enabled():
+            self.logger.info(msg)
+
+    def _log_debug(self, msg: str) -> None:
+        if self._log_enabled():
+            self.logger.debug(msg)
+
+    def _log_warn(self, msg: str) -> None:
+        if self._log_enabled():
+            self.logger.warning(msg)
+
+    def _maybe(self, fn) -> None:
+        """Run fn() only on log steps; swallow exceptions to avoid training stalls."""
+        if not self._log_enabled():
+            return
+        try:
+            fn()
+        except Exception as e:
+            self.logger.debug(f"[log-skip] {e}")
+
     def train_episode(self, epoch_t: int, train_frames: int):
         """Do a single training episode.
 
@@ -1318,9 +1359,28 @@ class AgentDQN:
                 self.num_actions,
             ), f"expected w=(J,N)=({len(self.betas)},{self.num_actions}), got {w.shape}"
 
-            beta_idx = np.asarray(beta_idx).reshape(-1).astype(np.int64)
-
+            beta_idx = int(np.asarray(beta_idx).reshape(-1)[0])
             done_flag = bool(is_terminated or truncated)
+
+            if self._should_log():
+                try:
+                    w_t = torch.tensor(w, dtype=torch.float32)  # (J,N)
+                    row_sums = w_t.sum(dim=1)
+                    nonneg = (w_t >= -1e-8).all().item()
+                    looks_prob = (
+                        torch.allclose(
+                            row_sums, torch.ones_like(row_sums), rtol=1e-2, atol=1e-2
+                        )
+                        and nonneg
+                    )
+                    if looks_prob:
+                        self.logger.warning(
+                            "[RB-SANITY] 'w' looks like normalized probabilities (u) instead of logits. "
+                            "Learning expects pre-softmax logits."
+                        )
+                except Exception:
+                    pass
+
             self.replay_buffer.append(
                 self.train_env_s, (beta_idx, w), reward, s_prime, done_flag
             )
