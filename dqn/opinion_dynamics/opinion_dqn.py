@@ -201,6 +201,67 @@ class AgentDQN:
             f"{self.model_checkpoint_file_basename}_{epoch_cnt}",
         )
 
+    def load_models_at(self,
+                   checkpoint: int | str,
+                   resume_training_path: str | None = None,
+                   eval_mode: bool = True) -> bool:
+        """
+        Load ONLY the model weights from a specific checkpoint.
+
+        Modes:
+        - Mode A (index): checkpoint is an int, and resume_training_path is provided.
+                            The path is resolved via self._make_model_checkpoint_file_path(resume_training_path, checkpoint).
+        - Mode B (full path): checkpoint is a str that points directly to the checkpoint file.
+
+        Args:
+            checkpoint (int | str): Epoch/step index (int) or full checkpoint file path (str).
+            resume_training_path (str | None): Base directory used when `checkpoint` is an int.
+            eval_mode (bool): If True, put loaded models into eval().
+
+        Returns:
+            bool: True if the models were loaded successfully, False otherwise.
+
+        Raises:
+            FileNotFoundError: If the resolved checkpoint file does not exist.
+            ValueError: If arguments are inconsistent (e.g., int checkpoint without a base path).
+        """
+        # Resolve checkpoint path
+        if isinstance(checkpoint, int):
+            if resume_training_path is None:
+                raise ValueError("When `checkpoint` is an int, `resume_training_path` must be provided.")
+            if checkpoint < 0:
+                raise ValueError("`checkpoint` index must be non-negative.")
+            ckpt_path = self._make_model_checkpoint_file_path(resume_training_path, checkpoint)
+        elif isinstance(checkpoint, str):
+            # Accept absolute or relative full file path
+            ckpt_path = os.path.abspath(checkpoint)
+        else:
+            raise ValueError("`checkpoint` must be an int (index) or str (full file path).")
+
+        # Validate existence
+        if not os.path.exists(ckpt_path) or not os.path.isfile(ckpt_path):
+            raise FileNotFoundError(f"Checkpoint file not found: {ckpt_path}")
+
+        try:
+            # Load just the models (no buffer, no stats)
+            self.load_models(ckpt_path)
+
+            # Optional: set eval() to avoid train-time layers affecting evaluation
+            if eval_mode:
+                for attr in ("policy", "actor", "critic", "q_network", "target_q_network", "model"):
+                    module = getattr(self, attr, None)
+                    if hasattr(module, "eval"):
+                        module.eval()
+
+            self.logger.info(f"Loaded model weights from checkpoint: {ckpt_path}")
+            return True
+
+        except Exception as e:
+            # Keep training loop alive; caller can decide what to do next
+            self.logger.exception(f"Failed to load models from {ckpt_path}: {e}")
+            return False
+
+
     def load_training_state(self, resume_training_path: str):
         """In order to resume training the following files are needed:
         - ReplayBuffer file
@@ -999,7 +1060,7 @@ class AgentDQN:
         self._maybe(lambda: globals().__setitem__("__gnp", self._grad_norm()))
         grad_norm_pre = globals().pop("__gnp", None)
 
-        torch.nn.utils.clip_grad_norm_(self.policy_model.parameters(), 10.0)
+        torch.nn.utils.clip_grad_norm_(self.policy_model.parameters(), 2.0)
         self.optimizer.step()
 
         # Post grad norm + optim log (only on log step)

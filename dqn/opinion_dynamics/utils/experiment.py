@@ -1,10 +1,12 @@
 import os, sys
 
+
 def get_dir_n_levels_up(path, n):
     # Go up n levels from the given path
     for _ in range(n):
         path = os.path.dirname(path)
     return path
+
 
 proj_root = get_dir_n_levels_up(os.path.abspath("__file__"), 4)
 sys.path.append(proj_root)
@@ -184,7 +186,7 @@ def create_adjacency_matrix_from_links(num_nodes, links):
     return adjacency_matrix
 
 
-def instantiate_agent(exp_subdir_path: str) -> AgentDQN:
+def instantiate_agent(exp_subdir_path: str, checkpoint: int) -> AgentDQN:
     """
     Instantiate an AgentDQN using the configuration stored in a YAML file
     in the provided experiment subdirectory. The agent is created with the
@@ -192,7 +194,7 @@ def instantiate_agent(exp_subdir_path: str) -> AgentDQN:
 
     Args:
         exp_subdir_path (str): Path to the experiment subdirectory containing the config YAML and checkpoint files.
-
+        checkpoint (int): The checkpoint number to load.
 
     Returns:
         AgentDQN: An instance of AgentDQN initialized using the experiment configuration and saved state.
@@ -214,5 +216,9 @@ def instantiate_agent(exp_subdir_path: str) -> AgentDQN:
         save_checkpoints=False,  # you can set this as needed
         logger=setup_logger("dqn"),
     )
+    if checkpoint is not None:
+        agent.load_models_at(
+            checkpoint=checkpoint, resume_training_path=exp_subdir_path
+        )
 
     return agent
