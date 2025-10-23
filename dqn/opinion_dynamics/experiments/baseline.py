@@ -189,7 +189,7 @@ def run_policy_agent(agent, max_steps=1000):
 
         # Agent selects action (exploitation only)
         action, _, _, _ = agent.select_action(
-            state_tensor, epsilon=agent.validation_epsilon, random_action=False
+            state_tensor, epsilon=agent.validation_epsilon, random_action=False, action_noise=False
         )
         action = np.squeeze(action)  # shape: (num_agents,)
         actions_over_time.append(action.copy())

@@ -332,12 +332,16 @@ class AgentDQN:
         self.target_model_update_freq = agent_params.get(
             "target_model_update_freq", 100
         )
-        self.tau = agent_params.get("target_soft_tau", 0.005)
+        self.target_soft_tau = agent_params.get("target_soft_tau", 0.005)
+        self.grad_norm_clip = agent_params.get("grad_norm_clip", 5.0)
         self.gamma = agent_params.get("gamma", 0.99)
         # self.loss_function = agent_params.get("loss_fcn", "mse_loss")
 
         self.action_w_noise_amplitude = agent_params.get(
             "action_w_noise_amplitude", 0.3
+        )
+        self.action_w_noise_eps_floor = agent_params.get(
+            "action_w_noise_eps_floor", 0.0
         )
         self.betas = agent_params.get("betas", [0, 0.5, 1])
 
@@ -371,7 +375,7 @@ class AgentDQN:
         W = 10  # was 8; slightly smoother rolling stats (log points, not steps)
         self._es_win = {
             "H": deque(maxlen=W),  # action entropy
-            "frac_cap": deque(maxlen=W),  # frac_u>0.4
+            "frac_cap": deque(maxlen=W),  
             "td_p95": deque(maxlen=W),  # p95(|TD|)
             "clamp_pct": deque(maxlen=W),
             "tgt_drift": deque(maxlen=W),  # ||target-source||/||source||
@@ -759,98 +763,8 @@ class AgentDQN:
 
         self.logger.debug(f"Training status saved at t = {self.t}")
 
-    # def select_action(self, state: torch.Tensor, epsilon: float = None, random_action: bool = False):
-    #     if state.dim() == 1:
-    #         state = state.unsqueeze(0)
-    #     B = state.shape[0]  # Always 1
-    #     N = self.num_actions
-    #     J = len(self.betas)
-    #     uniform_w = torch.ones(N, dtype=torch.float32) / N  # (N,)
-    #     all_uniform_w = uniform_w.unsqueeze(0).repeat(J, 1)  # (J, N)
-    #     w_full = all_uniform_w.unsqueeze(0).repeat(B, 1, 1)  # (1, J, N)
-
-    #     with torch.no_grad():
-    #         c = self.policy_model(state)["c"]  # (1, J)
-    #         if random_action or (epsilon is not None and np.random.rand() < epsilon):
-    #             beta_idx = torch.randint(low=0, high=J, size=(1,), dtype=torch.long)
-    #             action_type = "random"
-    #         else:
-    #             _, beta_idx = c.max(dim=1)  # (1,)
-    #             action_type = "greedy"
-
-    #         betas_tensor = torch.tensor([self.betas[int(i)] for i in beta_idx], dtype=torch.float32)
-    #         action = betas_tensor.unsqueeze(1) * uniform_w.unsqueeze(0)  # (1, N)
-    #         w_full.zero_()
-    #         w_full[0, beta_idx[0], :] = uniform_w
-    #         avg_q = c[0, beta_idx[0]].item()
-
-    #     # if self.t % 100000 == 0:
-    #     #     self.logger.info(f"select_action: state shape: {state.shape}")
-    #     #     self.logger.info(f"select_action: uniform_w shape: {uniform_w.shape}")
-    #     #     self.logger.info(f"select_action: all_uniform_w shape: {all_uniform_w.shape}")
-    #     #     self.logger.info(f"select_action: w_full shape: {w_full.shape}")
-    #     #     self.logger.info(f"select_action: q_values (c) shape: {c.shape}")
-    #     #     self.logger.info(f"select_action: ({action_type}) beta_idx: {beta_idx}")
-    #     #     self.logger.info(f"select_action: betas_tensor shape: {betas_tensor.shape}, value: {betas_tensor}")
-    #     #     self.logger.info(f"select_action: action shape: {action.shape}")
-    #     #     self.logger.info(f"select_action: w_full after scatter shape: {w_full.shape}")
-    #     #     self.logger.info(f"select_action: avg_q: {avg_q}")
-
-    #     return (
-    #         action.cpu().numpy(),             # (1, N)
-    #         beta_idx.cpu().numpy().astype(np.int64),  # (1,)
-    #         w_full.cpu().numpy(),             # (1, J, N)
-    #         avg_q,
-    #     )
-
-    # def model_learn(self, sample, debug=True):
-    #     """Compute the loss with TD learning for the FixedW (discrete β) model."""
-    #     # Unpack; we ignore ws for FixedW
-    #     states, (beta_indices, _ws), rewards, next_states, dones = sample
-
-    #     device = next(self.policy_model.parameters()).device
-    #     B = len(states)
-
-    #     # ---- Tensors ----
-    #     states      = torch.as_tensor(np.stack(states),      dtype=torch.float32, device=device)
-    #     next_states = torch.as_tensor(np.stack(next_states), dtype=torch.float32, device=device)
-
-    #     # Make beta_indices a flat (B,) Long tensor
-    #     # If your buffer stores shape (B,1) arrays, this still works.
-    #     beta_indices = torch.as_tensor(beta_indices, dtype=torch.long, device=device).view(-1)
-
-    #     rewards = torch.as_tensor(rewards, dtype=torch.float32, device=device).view(B, 1)
-    #     dones   = torch.as_tensor(dones,   dtype=torch.float32, device=device).view(B, 1)
-
-    #     # ---- Q(s, β) from policy model ----
-    #     self.policy_model.train()
-    #     q = self.policy_model(states)["c"]               # (B, J)
-    #     q_sa = q.gather(1, beta_indices.unsqueeze(1))    # (B, 1)
-
-    #     # ---- Double DQN target: use online net to select, target net to evaluate ----
-    #     with torch.no_grad():
-    #         q_next_online = self.policy_model(next_states)["c"]           # (B, J)
-    #         next_beta_idx = q_next_online.argmax(dim=1, keepdim=True)     # (B, 1)
-
-    #         q_next_target = self.target_model(next_states)["c"]           # (B, J)
-    #         max_next_q    = q_next_target.gather(1, next_beta_idx)        # (B, 1)
-
-    #         target = rewards + self.gamma * (1.0 - dones) * max_next_q    # (B, 1)
-
-    #     # ---- Loss & step ----
-    #     # Huber is typically more stable than MSE for Q-learning
-    #     loss = F.smooth_l1_loss(q_sa, target)
-
-    #     self.optimizer.zero_grad()
-    #     loss.backward()
-    #     torch.nn.utils.clip_grad_norm_(self.policy_model.parameters(), 10.0)
-    #     self.optimizer.step()
-
-    #     return float(loss.item())
-
-    # Original select action
     def select_action(
-        self, state: torch.Tensor, epsilon: float = None, random_action: bool = False
+        self, state: torch.Tensor, epsilon: float = None, random_action: bool = False, action_noise: bool = False
     ):
         """
         Returns:
@@ -891,8 +805,11 @@ class AgentDQN:
             ), f"q_values shape mismatch: {q_values.shape}"
 
             eps = 0.0 if epsilon is None else float(epsilon)
-            noise_amplitude = self.action_w_noise_amplitude * eps
-
+            if action_noise:
+                noise_amplitude = self.action_w_noise_amplitude * max(eps, self.action_w_noise_eps_floor)
+            else:
+                noise_amplitude = 0.0
+                
             # Prepare betas on correct device/dtype
             betas_t = torch.tensor(self.betas, device=device, dtype=dtype)  # (J,)
 
@@ -1060,7 +977,7 @@ class AgentDQN:
         self._maybe(lambda: globals().__setitem__("__gnp", self._grad_norm()))
         grad_norm_pre = globals().pop("__gnp", None)
 
-        torch.nn.utils.clip_grad_norm_(self.policy_model.parameters(), 2.0)
+        torch.nn.utils.clip_grad_norm_(self.policy_model.parameters(), self.grad_norm_clip)
         self.optimizer.step()
 
         # Post grad norm + optim log (only on log step)
@@ -1069,7 +986,7 @@ class AgentDQN:
         self._maybe(lambda: self._log_optim_step(loss, grad_norm_pre, grad_norm_post))
 
         # Soft target update
-        self._soft_update(tau=self.tau)
+        self._soft_update(tau=self.target_soft_tau)
 
         # Param sanity check (rare)
         def _param_sanity():
@@ -1354,6 +1271,7 @@ class AgentDQN:
             action, beta_idx, w, max_q = self.select_action(
                 torch.tensor(self.train_env_s, dtype=torch.float32),
                 epsilon=self.epsilon_by_frame(self.t),
+                action_noise=True,
             )
             action = np.asarray(action, dtype=np.float32)  # (1, N)
             action = action[0]  # -> (N,) even when N==1
@@ -1362,7 +1280,7 @@ class AgentDQN:
                 try:
                     # action is (N,)
                     act = torch.tensor(action, dtype=torch.float32)
-                    frac_over_cap = (act > 0.4).float().mean().item()
+                    frac_over_cap = (act > 0.3).float().mean().item()
                     topk_vals, _ = torch.topk(act, k=min(3, act.numel()))
                     # Pull chosen w "logits" for entropy proxy
                     bidx = int(np.asarray(beta_idx).reshape(-1)[0])
@@ -1373,7 +1291,7 @@ class AgentDQN:
                         H = -(p * p.clamp_min(1e-8).log()).sum().item()
                     self.logger.info(
                         f"t={self.t} | eps={self.epsilon_by_frame(self.t):.4f} | beta_idx={bidx} "
-                        f"| action_entropy={H:.3f} | frac_u>0.4={frac_over_cap:.3f} "
+                        f"| action_entropy={H:.3f} | frac_u>0.3={frac_over_cap:.3f} "
                         f"| top3_u={topk_vals.tolist()} | max_q={max_q:.3g}"
                     )
                     self._last_entropy = H
@@ -1514,7 +1432,7 @@ class AgentDQN:
     def display_training_epoch_info(self, stats):
         extra = (
             f" | Entropy(last)={None if self._last_entropy is None else round(self._last_entropy,3)}"
-            f" | frac_u>0.4(last)={None if self._last_frac_over_cap is None else round(self._last_frac_over_cap,3)}"
+            f" | frac_u>0.3(last)={None if self._last_frac_over_cap is None else round(self._last_frac_over_cap,3)}"
             f" | tgt_drift(last)={None if self._last_rel_target_drift is None else f'{self._last_rel_target_drift:.2e}'}"
         )
 
@@ -1707,7 +1625,7 @@ class AgentDQN:
             and (ep_frames < self.validation_step_cnt)
         ):
             action, betas, w, max_q = self.select_action(
-                torch.tensor(s, dtype=torch.float32), epsilon=self.validation_epsilon
+                torch.tensor(s, dtype=torch.float32), epsilon=self.validation_epsilon, action_noise=False
             )
             action = np.squeeze(action)
             if not np.isfinite(action).all():

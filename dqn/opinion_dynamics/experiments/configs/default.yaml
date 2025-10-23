@@ -9,7 +9,7 @@ agent_params:
     train_step_cnt: 200_000
     validation_enabled: True
     validation_step_cnt: 5_000
-    validation_epsilon: 0.03
+    validation_epsilon: 0
 
     replay_start_size: 10_000
     batch_size: 128
@@ -17,25 +17,27 @@ agent_params:
     
     target_model_update_freq: 1_000
     target_soft_tau: 0.0001
+    grad_norm_clip: 10.0
 
     action_w_noise_amplitude: 0.3
+    action_w_noise_eps_floor: 0.1
 
     gamma: 0.99
-    betas: [0.1, 1, 2]
+    betas: [2]
 
     epsilon:
       start: 1.0
-      end: 0.03
+      end: 0.1
       decay: 1_000_000
 
 estimator:
-  model: OpinionNetCommonAB
+  model: OpinionNet
   args_:
     lin_hidden_size: 64
     softplus_beta: 1.0
     wstar_eps: 0.000001
     A_min: null              
-    A_max: 75.0
+    A_max: null
     b_tanh_scale: null
     c_tanh_scale: null
 
