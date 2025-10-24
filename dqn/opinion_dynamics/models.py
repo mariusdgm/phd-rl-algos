@@ -11,13 +11,15 @@ class OpinionNetCommonAB(nn.Module):
         nr_betas: int = 2,
         lin_hidden_size: int = 64,
         c_tanh_scale: Optional[float] = None,
-        softplus_beta: float = 1.0,           # softness for A
-        wstar_eps: float = 1e-6,              # safety in w* division
+        softplus_beta: float = 1.0,  # softness for A
+        wstar_eps: float = 1e-6,  # safety in w* division
         return_w_star_default: bool = False,  # default for forward()
-        A_min: Optional[float] = None,        # e.g. 0.02
-        A_max: Optional[float] = None,        # e.g. 3.0
-        b_tanh_scale: Optional[float] = None, # e.g. 1.5
-        b_bias_scale: float = 1e-2,           # small random asymmetry for b
+        A_min: Optional[float] = None,  # e.g. 0.02
+        A_max: Optional[float] = None,  # e.g. 3.0
+        b_tanh_scale: Optional[float] = None,  # e.g. 1.5
+        b_bias_scale: float = 1e-2,  # small random asymmetry for b
+        use_layernorm: bool = True,
+        layernorm_eps: float = 1e-5,
     ):
         super().__init__()
         self.nr_agents = nr_agents
@@ -31,6 +33,7 @@ class OpinionNetCommonAB(nn.Module):
         self.A_max = A_max
         self.b_tanh_scale = b_tanh_scale
         self.b_bias_scale = b_bias_scale
+        self.use_layernorm = use_layernorm
 
         # Trunk
         self.fc = nn.Sequential(
@@ -39,6 +42,7 @@ class OpinionNetCommonAB(nn.Module):
             nn.Linear(self.lin_hidden_size, self.lin_hidden_size),
             nn.ReLU(),
         )
+        self.trunk_ln = nn.LayerNorm(self.lin_hidden_size, eps=layernorm_eps)
 
         # Heads
         self.predict_shared_A_b = nn.Linear(self.lin_hidden_size, 2 * self.nr_agents)
@@ -53,13 +57,17 @@ class OpinionNetCommonAB(nn.Module):
                     nn.init.zeros_(m.bias)
 
             # Heads
-            nn.init.kaiming_uniform_(self.predict_shared_A_b.weight, a=0.0, nonlinearity="linear")
-            nn.init.kaiming_uniform_(self.predict_c.weight, a=0.0, nonlinearity="linear")
+            nn.init.kaiming_uniform_(
+                self.predict_shared_A_b.weight, a=0.0, nonlinearity="linear"
+            )
+            nn.init.kaiming_uniform_(
+                self.predict_c.weight, a=0.0, nonlinearity="linear"
+            )
 
             # Bias layout for [A(1..N) | b(1..N)]
             ab_bias = torch.zeros(2 * self.nr_agents)
             ab_bias[: self.nr_agents] = 0.0  # A bias -> softplus(0)=0.693
-            ab_bias[self.nr_agents:] = torch.empty(self.nr_agents).uniform_(
+            ab_bias[self.nr_agents :] = torch.empty(self.nr_agents).uniform_(
                 -self.b_bias_scale, self.b_bias_scale
             )  # small asymmetry for b
             self.predict_shared_A_b.bias.copy_(ab_bias)
@@ -77,6 +85,8 @@ class OpinionNetCommonAB(nn.Module):
 
         B = x.shape[0]
         features = self.fc(x)
+        if self.use_layernorm:
+            features = self.trunk_ln(features)
 
         A_b_shared = self.predict_shared_A_b(features)
         A_raw = A_b_shared[:, : self.nr_agents]
@@ -117,14 +127,18 @@ class OpinionNetCommonAB(nn.Module):
         return out
 
     @staticmethod
-    def compute_w_star(A_diag: torch.Tensor, b: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    def compute_w_star(
+        A_diag: torch.Tensor, b: torch.Tensor, eps: float = 1e-6
+    ) -> torch.Tensor:
         return b / (A_diag + eps)
 
     @staticmethod
-    def compute_q_values(w: torch.Tensor, A_diag: torch.Tensor, b: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
-        assert (w.shape == A_diag.shape == b.shape)
+    def compute_q_values(
+        w: torch.Tensor, A_diag: torch.Tensor, b: torch.Tensor, c: torch.Tensor
+    ) -> torch.Tensor:
+        assert w.shape == A_diag.shape == b.shape
         quad = 0.5 * (A_diag * w.pow(2)).sum(dim=2)
-        lin  = (b * w).sum(dim=2)
+        lin = (b * w).sum(dim=2)
         return c - quad + lin
 
     @staticmethod
@@ -132,7 +146,9 @@ class OpinionNetCommonAB(nn.Module):
         return w + torch.randn_like(w) * noise_amplitude
 
     @staticmethod
-    def compute_action_from_w(w: torch.Tensor, beta: torch.Tensor, max_u: Optional[float] = None) -> torch.Tensor:
+    def compute_action_from_w(
+        w: torch.Tensor, beta: torch.Tensor, max_u: Optional[float] = None
+    ) -> torch.Tensor:
         w_norm = F.softmax(w, dim=-1)
         u = w_norm * beta
         if max_u is not None:
@@ -146,14 +162,18 @@ class OpinionNet(nn.Module):
         nr_agents: int,
         nr_betas: int = 2,
         lin_hidden_size: int = 64,
-        c_tanh_scale: Optional[float] = None,  # keep None to match prior "winning" setup
+        c_tanh_scale: Optional[
+            float
+        ] = None,  # keep None to match prior "winning" setup
         softplus_beta: float = 1.0,
         wstar_eps: float = 1e-6,
         return_w_star_default: bool = False,
-        A_min: Optional[float] = None,         # e.g. 0.02
-        A_max: Optional[float] = None,         # e.g. 3.0
+        A_min: Optional[float] = None,  # e.g. 0.02
+        A_max: Optional[float] = None,  # e.g. 3.0
         b_tanh_scale: Optional[float] = None,  # e.g. 1.5
-        b_bias_scale: float = 1e-2,            # small random asymmetry for b
+        b_bias_scale: float = 1e-2,  # small random asymmetry for b
+        use_layernorm: bool = True,
+        layernorm_eps: float = 1e-5,
     ):
         super().__init__()
         self.nr_agents = nr_agents
@@ -167,6 +187,7 @@ class OpinionNet(nn.Module):
         self.A_max = A_max
         self.b_tanh_scale = b_tanh_scale
         self.b_bias_scale = b_bias_scale
+        self.use_layernorm = use_layernorm
 
         # Trunk
         self.fc = nn.Sequential(
@@ -175,9 +196,12 @@ class OpinionNet(nn.Module):
             nn.Linear(self.lin_hidden_size, self.lin_hidden_size),
             nn.ReLU(),
         )
+        self.trunk_ln = nn.LayerNorm(self.lin_hidden_size, eps=layernorm_eps)
 
         # Per-β head: [c | A_diag(N) | b(N)]
-        self.predict_A_b_c = nn.Linear(self.lin_hidden_size, self.nr_betas * (2 * self.nr_agents + 1))
+        self.predict_A_b_c = nn.Linear(
+            self.lin_hidden_size, self.nr_betas * (2 * self.nr_agents + 1)
+        )
 
         # ---- Initialization: A≈softplus(0)=0.693, b≈U(±1e-2), c=0 ----
         with torch.no_grad():
@@ -186,16 +210,22 @@ class OpinionNet(nn.Module):
                     nn.init.kaiming_uniform_(m.weight, a=0.0, nonlinearity="relu")
                     nn.init.zeros_(m.bias)
 
-            nn.init.kaiming_uniform_(self.predict_A_b_c.weight, a=0.0, nonlinearity="linear")
+            nn.init.kaiming_uniform_(
+                self.predict_A_b_c.weight, a=0.0, nonlinearity="linear"
+            )
 
             full_bias = self.predict_A_b_c.bias  # (J*(2N+1),)
             block = 2 * self.nr_agents + 1
 
             for j in range(self.nr_betas):
                 off = j * block
-                full_bias[off + 0] = 0.0                                # c_j = 0
-                full_bias[off + 1 : off + 1 + self.nr_agents] = 0.0     # A bias -> softplus(0)=0.693
-                full_bias[off + 1 + self.nr_agents : off + block] = torch.empty(self.nr_agents).uniform_(
+                full_bias[off + 0] = 0.0  # c_j = 0
+                full_bias[off + 1 : off + 1 + self.nr_agents] = (
+                    0.0  # A bias -> softplus(0)=0.693
+                )
+                full_bias[off + 1 + self.nr_agents : off + block] = torch.empty(
+                    self.nr_agents
+                ).uniform_(
                     -self.b_bias_scale, self.b_bias_scale
                 )  # b_j small random asymmetry
 
@@ -210,12 +240,16 @@ class OpinionNet(nn.Module):
 
         B = x.shape[0]
         features = self.fc(x)
+        if self.use_layernorm:
+            features = self.trunk_ln(features)
 
-        A_b_c_net = self.predict_A_b_c(features).reshape(-1, self.nr_betas, 2 * self.nr_agents + 1)
+        A_b_c_net = self.predict_A_b_c(features).reshape(
+            -1, self.nr_betas, 2 * self.nr_agents + 1
+        )
 
-        c     = A_b_c_net[:, :, 0]
+        c = A_b_c_net[:, :, 0]
         A_raw = A_b_c_net[:, :, 1 : self.nr_agents + 1]
-        b     = A_b_c_net[:, :, self.nr_agents + 1 :]
+        b = A_b_c_net[:, :, self.nr_agents + 1 :]
 
         A_diag = F.softplus(A_raw, beta=self.softplus_beta)
 
@@ -248,14 +282,18 @@ class OpinionNet(nn.Module):
         return output
 
     @staticmethod
-    def compute_w_star(A_diag: torch.Tensor, b: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    def compute_w_star(
+        A_diag: torch.Tensor, b: torch.Tensor, eps: float = 1e-6
+    ) -> torch.Tensor:
         return b / (A_diag + eps)
 
     @staticmethod
-    def compute_q_values(w: torch.Tensor, A_diag: torch.Tensor, b: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
-        assert (w.shape == A_diag.shape == b.shape)
+    def compute_q_values(
+        w: torch.Tensor, A_diag: torch.Tensor, b: torch.Tensor, c: torch.Tensor
+    ) -> torch.Tensor:
+        assert w.shape == A_diag.shape == b.shape
         quad = 0.5 * (A_diag * w.pow(2)).sum(dim=2)
-        lin  = (b * w).sum(dim=2)
+        lin = (b * w).sum(dim=2)
         return c - quad + lin
 
     @staticmethod
@@ -264,7 +302,9 @@ class OpinionNet(nn.Module):
         return w + noise
 
     @staticmethod
-    def compute_action_from_w(w: torch.Tensor, beta: torch.Tensor, max_u: Optional[float] = None) -> torch.Tensor:
+    def compute_action_from_w(
+        w: torch.Tensor, beta: torch.Tensor, max_u: Optional[float] = None
+    ) -> torch.Tensor:
         w_norm = F.softmax(w, dim=-1)
         u = w_norm * beta
         if max_u is not None:

@@ -806,7 +806,10 @@ class AgentDQN:
 
             eps = 0.0 if epsilon is None else float(epsilon)
             if action_noise:
-                noise_amplitude = self.action_w_noise_amplitude * max(eps, self.action_w_noise_eps_floor)
+                # recommended: base 0.3, floor 0.10–0.15
+                sigma = self.action_w_noise_amplitude
+                floor = self.action_w_noise_eps_floor
+                noise_amplitude = sigma * max(eps, floor)
             else:
                 noise_amplitude = 0.0
                 
@@ -814,7 +817,8 @@ class AgentDQN:
             betas_t = torch.tensor(self.betas, device=device, dtype=dtype)  # (J,)
 
             # === RANDOM ACTION BRANCH ===
-            if random_action or (epsilon is not None and np.random.rand() < epsilon):
+            take_random = (random_action or (epsilon is not None and np.random.rand() < epsilon))
+            if take_random:
                 rand_idx = torch.randint(
                     low=0, high=J, size=(B,), dtype=torch.long, device=device
                 )
@@ -828,9 +832,7 @@ class AgentDQN:
 
                 # (optional) exploration noise on logits
                 if noise_amplitude > 0.0:
-                    w_rand = self.policy_model.apply_action_noise(
-                        w_rand, noise_amplitude
-                    )
+                    w_rand = self.policy_model.apply_action_noise(w_rand, noise_amplitude)
 
                 # build ws_to_store: zeros except chosen β row
                 ws_to_store = torch.zeros_like(w_star)  # (B,J,N)
@@ -879,10 +881,10 @@ class AgentDQN:
             optimal_w = w_star.gather(1, beta_idx_exp).squeeze(1)  # (B,N)
 
             # (optional) exploration noise on greedy path
-            if noise_amplitude > 0.0:
-                optimal_w = self.policy_model.apply_action_noise(
-                    optimal_w, noise_amplitude
-                )
+            # if noise_amplitude > 0.0:
+            #     optimal_w = self.policy_model.apply_action_noise(
+            #         optimal_w, noise_amplitude
+            #     )
 
             # store logits: zeros except chosen β row
             ws_to_store = torch.zeros_like(w_star)  # (B,J,N)

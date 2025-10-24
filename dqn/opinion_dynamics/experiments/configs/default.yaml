@@ -1,6 +1,6 @@
 experiment: "opinion_agent_dqn"
 
-epochs_to_train: 25
+epochs_to_train: 30
 environment: [opinion_net]
 
 agent_params:
@@ -33,7 +33,7 @@ agent_params:
 estimator:
   model: OpinionNet
   args_:
-    lin_hidden_size: 64
+    lin_hidden_size: 128
     softplus_beta: 1.0
     wstar_eps: 0.000001
     A_min: null              

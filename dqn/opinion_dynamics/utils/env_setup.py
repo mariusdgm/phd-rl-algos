@@ -21,6 +21,8 @@ class EnvironmentFactory:
             "opinion_end_tolerance": 0.05,
             "control_beta": 0.5,
             "normalize_reward": True,
+            "use_delta_shaping": True,
+            "delta_lambda": 0.1,
             "terminal_reward": 0.5,
             "terminate_when_converged": False,
             "dynamics_model": "coca",  # or "laplacian"
@@ -37,7 +39,7 @@ class EnvironmentFactory:
             config["seed"] = seed
 
         num_agents = config["num_agents"]
-        initial_opinions = np.random.uniform(low=0.1, high=0.99, size=num_agents)
+        initial_opinions = np.random.uniform(low=0.05, high=0.9, size=num_agents)
         config["initial_opinions"] = initial_opinions
 
         env = NetworkGraph(**config)
