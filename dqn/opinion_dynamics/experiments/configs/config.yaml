@@ -4,13 +4,13 @@ agent_params:
   args_:
     target_soft_tau: [0.0005, 0.001]
 
-# optim:
-#   args_:
-#     lr: [0.000001] 
+optim:
+  args_:
+    lr: [0.00001, 0.00003] 
 
 estimator:
   args_:
-    c_tanh_scale: [null, 5]
+    c_tanh_scale: [null, 10]
 
 # estimator:
 #   model: [OpinionNet]

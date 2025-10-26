@@ -60,39 +60,68 @@ class ReplayBuffer:
 
         return states, (beta_indices, ws), rewards, next_states, dones
 
-    def sample_n_step(self, batch_size, stride=1):
+    def sample_n_step(self, batch_size):
         """
-        Sample N-step transitions for bootstrapped updates.
+        Return a batch of n-step transitions:
+        (s_t, (beta_idx_t, w_t), R_t^{(n)}, s_{t+n}, done_{t+n})
+        where R_t^{(n)} = r_t + gamma r_{t+1} + ... + gamma^{n-1} r_{t+n-1},
+        and we stop early if a 'done' is encountered.
         """
+        # If n-step is disabled, just use the regular sampler.
+        if not isinstance(self.n_step, int) or self.n_step <= 1:
+            return self.sample(batch_size)
+
         if batch_size > len(self):
             raise ValueError("Not enough transitions to sample")
 
-        transitions = []
-        for _ in range(batch_size):
-            start_idx = random.randint(0, len(self) - self.n_step * stride - 1)
-            end_idx = start_idx + self.n_step * stride
-            samples = self.buffer[start_idx:end_idx:stride]
+        buf = list(self.buffer)  # local indexable view
+        N = len(buf)
+        gamma = float(getattr(self, "gamma", 0.9))  # default if not set
 
-            state, _, _, _, _ = samples[0]
-            _, _, _, next_state, done = samples[-1]
+        # Choose arbitrary starting indices; we will clamp by episode end (done) when rolling forward.
+        idxs = random.sample(range(N), batch_size)
 
-            reward = 0
-            for i in range(self.n_step):
-                _, action, r, _, _ = samples[i * stride]
-                reward += r * pow(self.gamma, i)
+        S0, BIDX0, W0, Rn, S_next_n, Dn = [], [], [], [], [], []
 
-            transitions.append((state, action, reward, next_state, done))
+        for start in idxs:
+            s0, (beta_idx0, w0), r0, ns0, d0 = buf[start]
 
-        states, actions, rewards, next_states, dones = zip(*transitions)
+            # Accumulate n-step return forward from 'start'
+            R = 0.0
+            g = 1.0
+            last_next_state = ns0
+            done_n = bool(d0)
 
-        # Normalize and stack outputs
-        states = torch.cat([s for s in states], dim=0)
-        next_states = torch.cat([s for s in next_states], dim=0)
-        actions = torch.tensor(actions, dtype=torch.float32)
-        rewards = torch.tensor(rewards, dtype=torch.float32)
-        dones = torch.tensor(dones, dtype=torch.float32)
+            # Walk forward up to n steps or until episode ends.
+            for k in range(self.n_step):
+                i = start + k
+                if i >= N:
+                    break  # ran out of buffer; keep what we have
+                s_i, a_i, r_i, ns_i, d_i = buf[i]
+                R += g * float(r_i)
+                last_next_state = ns_i
+                done_n = bool(d_i)
+                g *= gamma
+                if d_i:
+                    break
 
-        return states, actions, rewards, next_states, dones
+            # Collect the n-step transition anchored at 'start'
+            S0.append(np.asarray(s0, dtype=np.float32))
+            BIDX0.append(int(beta_idx0))
+            W0.append(np.asarray(w0, dtype=np.float32))
+            Rn.append(R)
+            S_next_n.append(np.asarray(last_next_state, dtype=np.float32))
+            Dn.append(float(done_n))
+
+        # Convert to tensors with shapes compatible with model_learn(...)
+        states = torch.tensor(np.stack(S0, axis=0), dtype=torch.float32)
+        next_states = torch.tensor(np.stack(S_next_n, axis=0), dtype=torch.float32)
+        beta_indices = torch.tensor(BIDX0, dtype=torch.long)
+        ws = torch.tensor(np.stack(W0, axis=0), dtype=torch.float32)
+        rewards = torch.tensor(Rn, dtype=torch.float32).view(-1, 1)
+        dones = torch.tensor(Dn, dtype=torch.float32).view(-1, 1)
+
+        return states, (beta_indices, ws), rewards, next_states, dones
 
     def save(self, file_name):
         with open(file_name, "wb") as f:

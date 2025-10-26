@@ -201,10 +201,12 @@ class AgentDQN:
             f"{self.model_checkpoint_file_basename}_{epoch_cnt}",
         )
 
-    def load_models_at(self,
-                   checkpoint: int | str,
-                   resume_training_path: str | None = None,
-                   eval_mode: bool = True) -> bool:
+    def load_models_at(
+        self,
+        checkpoint: int | str,
+        resume_training_path: str | None = None,
+        eval_mode: bool = True,
+    ) -> bool:
         """
         Load ONLY the model weights from a specific checkpoint.
 
@@ -228,15 +230,21 @@ class AgentDQN:
         # Resolve checkpoint path
         if isinstance(checkpoint, int):
             if resume_training_path is None:
-                raise ValueError("When `checkpoint` is an int, `resume_training_path` must be provided.")
+                raise ValueError(
+                    "When `checkpoint` is an int, `resume_training_path` must be provided."
+                )
             if checkpoint < 0:
                 raise ValueError("`checkpoint` index must be non-negative.")
-            ckpt_path = self._make_model_checkpoint_file_path(resume_training_path, checkpoint)
+            ckpt_path = self._make_model_checkpoint_file_path(
+                resume_training_path, checkpoint
+            )
         elif isinstance(checkpoint, str):
             # Accept absolute or relative full file path
             ckpt_path = os.path.abspath(checkpoint)
         else:
-            raise ValueError("`checkpoint` must be an int (index) or str (full file path).")
+            raise ValueError(
+                "`checkpoint` must be an int (index) or str (full file path)."
+            )
 
         # Validate existence
         if not os.path.exists(ckpt_path) or not os.path.isfile(ckpt_path):
@@ -248,7 +256,7 @@ class AgentDQN:
 
             # Optional: set eval() to avoid train-time layers affecting evaluation
             if eval_mode:
-                for attr in ("policy", "actor", "critic", "q_network", "target_q_network", "model"):
+                for attr in ("policy_model", "target_model"):
                     module = getattr(self, attr, None)
                     if hasattr(module, "eval"):
                         module.eval()
@@ -260,7 +268,6 @@ class AgentDQN:
             # Keep training loop alive; caller can decide what to do next
             self.logger.exception(f"Failed to load models from {ckpt_path}: {e}")
             return False
-
 
     def load_training_state(self, resume_training_path: str):
         """In order to resume training the following files are needed:
@@ -375,7 +382,7 @@ class AgentDQN:
         W = 10  # was 8; slightly smoother rolling stats (log points, not steps)
         self._es_win = {
             "H": deque(maxlen=W),  # action entropy
-            "frac_cap": deque(maxlen=W),  
+            "frac_cap": deque(maxlen=W),
             "td_p95": deque(maxlen=W),  # p95(|TD|)
             "clamp_pct": deque(maxlen=W),
             "tgt_drift": deque(maxlen=W),  # ||target-source||/||source||
@@ -764,7 +771,11 @@ class AgentDQN:
         self.logger.debug(f"Training status saved at t = {self.t}")
 
     def select_action(
-        self, state: torch.Tensor, epsilon: float = None, random_action: bool = False, action_noise: bool = False
+        self,
+        state: torch.Tensor,
+        epsilon: float = None,
+        random_action: bool = False,
+        action_noise: bool = False,
     ):
         """
         Returns:
@@ -806,18 +817,20 @@ class AgentDQN:
 
             eps = 0.0 if epsilon is None else float(epsilon)
             if action_noise:
-                # recommended: base 0.3, floor 0.10–0.15
+                # recommended: base 0.4, floor 0.10–0.15
                 sigma = self.action_w_noise_amplitude
                 floor = self.action_w_noise_eps_floor
                 noise_amplitude = sigma * max(eps, floor)
             else:
                 noise_amplitude = 0.0
-                
+
             # Prepare betas on correct device/dtype
             betas_t = torch.tensor(self.betas, device=device, dtype=dtype)  # (J,)
 
             # === RANDOM ACTION BRANCH ===
-            take_random = (random_action or (epsilon is not None and np.random.rand() < epsilon))
+            take_random = random_action or (
+                epsilon is not None and np.random.rand() < epsilon
+            )
             if take_random:
                 rand_idx = torch.randint(
                     low=0, high=J, size=(B,), dtype=torch.long, device=device
@@ -832,7 +845,9 @@ class AgentDQN:
 
                 # (optional) exploration noise on logits
                 if noise_amplitude > 0.0:
-                    w_rand = self.policy_model.apply_action_noise(w_rand, noise_amplitude)
+                    w_rand = self.policy_model.apply_action_noise(
+                        w_rand, noise_amplitude
+                    )
 
                 # build ws_to_store: zeros except chosen β row
                 ws_to_store = torch.zeros_like(w_star)  # (B,J,N)
@@ -881,10 +896,10 @@ class AgentDQN:
             optimal_w = w_star.gather(1, beta_idx_exp).squeeze(1)  # (B,N)
 
             # (optional) exploration noise on greedy path
-            # if noise_amplitude > 0.0:
-            #     optimal_w = self.policy_model.apply_action_noise(
-            #         optimal_w, noise_amplitude
-            #     )
+            if noise_amplitude > 0.0:
+                optimal_w = self.policy_model.apply_action_noise(
+                    optimal_w, noise_amplitude
+                )
 
             # store logits: zeros except chosen β row
             ws_to_store = torch.zeros_like(w_star)  # (B,J,N)
@@ -949,9 +964,8 @@ class AgentDQN:
             target = rewards + self.gamma * (1.0 - dones) * max_next_q  # (B,1)
 
         # Log batch stats (compact)
-        self._maybe(lambda: self._log_learn_batch_stats(q_sa, target, A, b, c))
-
-        # Loss + backward
+        self._maybe(lambda: self._log_learn_batch_stats(q_sa, target, A, b, c, ws, beta_indices))
+        
         loss = F.smooth_l1_loss(q_sa, target)
         self.optimizer.zero_grad()
         if not torch.isfinite(loss):
@@ -979,7 +993,9 @@ class AgentDQN:
         self._maybe(lambda: globals().__setitem__("__gnp", self._grad_norm()))
         grad_norm_pre = globals().pop("__gnp", None)
 
-        torch.nn.utils.clip_grad_norm_(self.policy_model.parameters(), self.grad_norm_clip)
+        torch.nn.utils.clip_grad_norm_(
+            self.policy_model.parameters(), self.grad_norm_clip
+        )
         self.optimizer.step()
 
         # Post grad norm + optim log (only on log step)
@@ -1025,28 +1041,75 @@ class AgentDQN:
         A_dt, b_t, c_t = abc_nt["A_diag"], abc_nt["b"], abc_nt["c"]
         w_star_t = self.target_model.compute_w_star(A_dt, b_t)
         q_next_tgt = self.target_model.compute_q_values(w_star_t, A_dt, b_t, c_t)
+
+        if self._should_log():
+            try:
+                q_on_sel = q_next_online.gather(1, next_beta_idx)  # (B,1)
+                q_tg_sel = q_next_tgt.gather(1, next_beta_idx)     # (B,1)
+                q_gap = (q_on_sel - q_tg_sel).mean().item()
+                self._log_info(f"target_gap@t={self.t} | mean(Q_on(s',β*)-Q_tg(s',β*))={q_gap:.3g}")
+            except Exception as e:
+                self._log_debug(f"[gap-log-skip] {e}")
+            
         return q_next_tgt.gather(1, next_beta_idx)  # (B,1)
 
     # ---------- Batch stat logging ----------
-    def _log_learn_batch_stats(self, q_sa, target, A_diag, b, c):
+    def _log_learn_batch_stats(self, q_sa, target, A_diag, b, c, ws, beta_indices):
         with torch.no_grad():
-            td = target - q_sa
+            td = target - q_sa                  # (B,1)
             td_abs = td.abs()
+            td_m  = td.mean().item()
+            td_p95 = robust_quantile(td_abs, 0.95).item()
+            td_p50 = robust_quantile(td_abs, 0.50).item()
+            td_sign = (td > 0).float().mean().item()
+
             qsa_m = q_sa.mean().item()
             tgt_m = target.mean().item()
-            td_m = td.mean().item()
-            td_p95 = robust_quantile(td_abs, 0.95).item()
+            q_scale = q_sa.abs().mean().item()
+
             A_min_v = A_diag.min().item()
             A_max_v = A_diag.max().item()
             b_mean = b.abs().mean().item()
             c_mean = c.abs().mean().item()
-        self._es_update(td_p95=td_p95)
-        self._log_info(
-            f"learn@t={self.t} | q_sa={qsa_m:.3g} | tgt={tgt_m:.3g} "
-            f"| td={td_m:.3g} | |td|_p95={td_p95:.3g} "
-            f"| A[min,max]=[{A_min_v:.3g},{A_max_v:.3g}] | |b|_mean={b_mean:.3g} | |c|_mean={c_mean:.3g}"
-        )
 
+            # clamp percentage: fraction of A at its configured floor
+            clamp_pct = None
+            try:
+                A_min_cfg = float(getattr(self.policy_model, "A_min", None))
+                if not np.isnan(A_min_cfg):
+                    eps = 1e-8
+                    clamp_pct = ((A_diag <= (A_min_cfg + eps)).float().mean()).item()
+            except Exception:
+                clamp_pct = None
+
+            # Select per-sample chosen β row for ws, A, b, c
+            B, J, N = ws.shape
+            beta_idx_exp = beta_indices.view(-1, 1, 1).expand(-1, 1, N)  # (B,1,N)
+            ws_sel = ws.gather(1, beta_idx_exp).squeeze(1)               # (B,N)
+            A_sel  = A_diag.gather(1, beta_idx_exp).squeeze(1)           # (B,N)
+            b_sel  = b.gather(1, beta_idx_exp).squeeze(1)                # (B,N)
+            c_sel  = c.gather(1, beta_indices.view(-1,1)).squeeze(1)     # (B,)
+
+            quad = 0.5 * (A_sel * (ws_sel ** 2)).sum(dim=1)              # (B,)
+            lin  = (b_sel * ws_sel).sum(dim=1)                           # (B,)
+            q_decomp_mean = (c_sel - quad + lin).mean().item()
+            quad_m = quad.mean().item()
+            lin_m  = lin.mean().item()
+
+            # value at w* for the chosen β (diagnostic only)
+            q_star = c_sel + 0.5 * ((b_sel ** 2) / (A_sel + 1e-6)).sum(dim=1)
+            q_star_m = q_star.mean().item()
+
+        self._es_update(td_p95=td_p95, clamp_pct=(0.0 if clamp_pct is None else clamp_pct))
+
+        self._log_info(
+            f"learn@t={self.t} | q_sa={qsa_m:.3g} | tgt={tgt_m:.3g} | |q|_mean={q_scale:.3g} "
+            f"| td={td_m:.3g} | |td|_p50={td_p50:.3g} | |td|_p95={td_p95:.3g} | td>0={td_sign:.2f} "
+            f"| A[min,max]=[{A_min_v:.3g},{A_max_v:.3g}] | clamp_pct={('NA' if clamp_pct is None else f'{clamp_pct:.2f}')} "
+            f"| |b|_mean={b_mean:.3g} | |c|_mean={c_mean:.3g} "
+            f"| q_decomp_mean={q_decomp_mean:.3g} | quad_m={quad_m:.3g} | lin_m={lin_m:.3g} | q*_m={q_star_m:.3g}"
+        )
+        
     # ---------- Grad norm + optim log ----------
     def _grad_norm(self) -> float:
         total_sq = 0.0
@@ -1282,7 +1345,7 @@ class AgentDQN:
                 try:
                     # action is (N,)
                     act = torch.tensor(action, dtype=torch.float32)
-                    frac_over_cap = (act > 0.3).float().mean().item()
+                    frac_over_cap = (act > 0.4).float().mean().item()
                     topk_vals, _ = torch.topk(act, k=min(3, act.numel()))
                     # Pull chosen w "logits" for entropy proxy
                     bidx = int(np.asarray(beta_idx).reshape(-1)[0])
@@ -1293,9 +1356,29 @@ class AgentDQN:
                         H = -(p * p.clamp_min(1e-8).log()).sum().item()
                     self.logger.info(
                         f"t={self.t} | eps={self.epsilon_by_frame(self.t):.4f} | beta_idx={bidx} "
-                        f"| action_entropy={H:.3f} | frac_u>0.3={frac_over_cap:.3f} "
+                        f"| action_entropy={H:.3f} | frac_u>0.4={frac_over_cap:.3f} "
                         f"| top3_u={topk_vals.tolist()} | max_q={max_q:.3g}"
                     )
+
+                    # use declared env cap if available, else 0.4 fallback
+                    cap = float(getattr(self.train_env, "max_u", 0.4))
+                    frac_over_cap_env = (act > cap).float().mean().item()
+                    overshoot_L1 = (act - cap).clamp_min(0).sum().item()
+
+                    # logit distribution diagnostics (before softmax*beta)
+                    H_w = H  # entropy of softmax(w) already computed as H
+                    HHI = (p**2).sum().item()  # 1 means all mass on one node
+                    w_l2 = w_chosen.norm(2).item()
+                    p_max = p.max().item()
+                    argmax_u = int(torch.argmax(act).item())
+
+                    self.logger.info(
+                        f"t={self.t} | cap={cap:.3g} | frac_u>cap={frac_over_cap_env:.3f} | overshoot_L1={overshoot_L1:.3g} "
+                        f"| HHI={HHI:.3f} | H_w={H_w:.3f} | ||w||2={w_l2:.3g} | p_max={p_max:.3f} | argmax_u={argmax_u}"
+                    )
+                    # feed early-stop windows (entropy already fed); track cap usage as well
+                    self._es_update(frac_cap=frac_over_cap_env)
+
                     self._last_entropy = H
                     self._last_frac_over_cap = frac_over_cap
                     self._es_update(H=H, frac_cap=frac_over_cap, max_q=max_q)
@@ -1434,7 +1517,7 @@ class AgentDQN:
     def display_training_epoch_info(self, stats):
         extra = (
             f" | Entropy(last)={None if self._last_entropy is None else round(self._last_entropy,3)}"
-            f" | frac_u>0.3(last)={None if self._last_frac_over_cap is None else round(self._last_frac_over_cap,3)}"
+            f" | frac_u>0.4(last)={None if self._last_frac_over_cap is None else round(self._last_frac_over_cap,3)}"
             f" | tgt_drift(last)={None if self._last_rel_target_drift is None else f'{self._last_rel_target_drift:.2e}'}"
         )
 
@@ -1627,7 +1710,9 @@ class AgentDQN:
             and (ep_frames < self.validation_step_cnt)
         ):
             action, betas, w, max_q = self.select_action(
-                torch.tensor(s, dtype=torch.float32), epsilon=self.validation_epsilon, action_noise=False
+                torch.tensor(s, dtype=torch.float32),
+                epsilon=self.validation_epsilon,
+                action_noise=False,
             )
             action = np.squeeze(action)
             if not np.isfinite(action).all():

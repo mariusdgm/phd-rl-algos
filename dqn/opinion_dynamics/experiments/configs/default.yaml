@@ -23,12 +23,12 @@ agent_params:
     action_w_noise_eps_floor: 0.1
 
     gamma: 0.99
-    betas: [2]
+    betas: [0.1, 1, 2]
 
     epsilon:
       start: 1.0
-      end: 0.1
-      decay: 1_000_000
+      end: 0.05
+      decay: 250_000
 
 estimator:
   model: OpinionNet
@@ -36,8 +36,8 @@ estimator:
     lin_hidden_size: 128
     softplus_beta: 1.0
     wstar_eps: 0.000001
-    A_min: null              
-    A_max: null
+    A_min: 0.01    
+    A_max: 3
     b_tanh_scale: null
     c_tanh_scale: null
 

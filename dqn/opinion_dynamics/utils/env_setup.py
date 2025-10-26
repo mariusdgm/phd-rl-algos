@@ -19,7 +19,7 @@ class EnvironmentFactory:
             "bidirectional_prob": 0.1,
             "max_steps": 100,
             "opinion_end_tolerance": 0.05,
-            "control_beta": 0.5,
+            "control_beta": 0.6,
             "normalize_reward": True,
             "use_delta_shaping": True,
             "delta_lambda": 0.1,
