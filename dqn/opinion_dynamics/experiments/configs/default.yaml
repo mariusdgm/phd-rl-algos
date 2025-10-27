@@ -1,6 +1,6 @@
 experiment: "opinion_agent_dqn"
 
-epochs_to_train: 30
+epochs_to_train: 35
 environment: [opinion_net]
 
 agent_params:
@@ -15,7 +15,8 @@ agent_params:
     batch_size: 128
     training_freq: 4
     
-    target_model_update_freq: 1_000
+    hard_target_update_every: 10_000
+    use_hard_target_updates: False
     target_soft_tau: 0.0001
     grad_norm_clip: 10.0
 
@@ -28,7 +29,12 @@ agent_params:
     epsilon:
       start: 1.0
       end: 0.05
-      decay: 250_000
+      decay: 2_500_000
+
+    lr_scheduler:
+      name: cosine
+      T_max: 2_500_000   # e.g., one long cycle over your steps
+      eta_min: 5e-6   # floor
 
 estimator:
   model: OpinionNet

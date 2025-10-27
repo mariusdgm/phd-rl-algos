@@ -361,6 +361,18 @@ class AgentDQN:
             decay=eps_settings["decay"],
             eps_decay_start=self.replay_start_size,
         )
+        
+        self.use_hard_target_updates = agent_params.get("use_hard_target_updates", False)
+        self.hard_target_update_every = agent_params.get("hard_target_update_every", 10_000)
+        # guard: if hard updates on, we will skip soft updates
+        if self.use_hard_target_updates:
+            self.logger.info(f"[CFG] Using HARD target updates every {self.hard_target_update_every} policy updates.")
+        else:
+            self.logger.info(f"[CFG] Using SOFT updates with tau={self.target_soft_tau}.")
+
+        # ---- NEW: optional LR scheduler (cosine) ----
+        sched_cfg = agent_params.get("lr_scheduler", None)
+        self._lr_sched_cfg = sched_cfg if isinstance(sched_cfg, dict) else None
 
         self._read_and_init_envs()  # sets up in_features etc...
 
@@ -592,6 +604,23 @@ class AgentDQN:
         self.optimizer = optim.Adam(
             self.policy_model.parameters(), **optimizer_settings["args"]
         )
+        
+        self.lr_scheduler = None
+        if self._lr_sched_cfg:
+            try:
+                name = str(self._lr_sched_cfg.get("name", "cosine")).lower()
+                if name == "cosine":
+                    T_max = int(self._lr_sched_cfg.get("T_max", 100_000))
+                    eta_min = float(self._lr_sched_cfg.get("eta_min", 0.0))
+                    self.lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                        self.optimizer, T_max=T_max, eta_min=eta_min
+                    )
+                    self.logger.info(f"[CFG] LR scheduler: CosineAnnealingLR(T_max={T_max}, eta_min={eta_min})")
+                else:
+                    self.logger.warning(f"[CFG] Unknown lr_scheduler name={name}; scheduler disabled.")
+            except Exception as e:
+                self.logger.warning(f"[CFG] Failed to init lr scheduler: {e}")
+                self.lr_scheduler = None
 
         self._log_model_and_optim_summaries()
 
@@ -823,7 +852,13 @@ class AgentDQN:
                 noise_amplitude = sigma * max(eps, floor)
             else:
                 noise_amplitude = 0.0
-
+                
+            if self._should_log():
+                if action_noise:
+                    self._log_debug(f"eff_noise_amp={noise_amplitude:.4f} (sigma={sigma}, eps={eps:.3f}, floor={floor})")
+                else:
+                    self._log_debug(f"eff_noise_amp={noise_amplitude:.4f} (action_noise=False, eps={eps:.3f})")
+            
             # Prepare betas on correct device/dtype
             betas_t = torch.tensor(self.betas, device=device, dtype=dtype)  # (J,)
 
@@ -998,13 +1033,20 @@ class AgentDQN:
         )
         self.optimizer.step()
 
+        if self.lr_scheduler is not None:
+            try:
+                self.lr_scheduler.step()
+            except Exception as e:
+                self._log_debug(f"[lr-sched-skip] {e}")
+                
         # Post grad norm + optim log (only on log step)
         self._maybe(lambda: globals().__setitem__("__gnpost", self._grad_norm()))
         grad_norm_post = globals().pop("__gnpost", None)
         self._maybe(lambda: self._log_optim_step(loss, grad_norm_pre, grad_norm_post))
 
         # Soft target update
-        self._soft_update(tau=self.target_soft_tau)
+        if not self.use_hard_target_updates:
+            self._soft_update(tau=self.target_soft_tau)
 
         # Param sanity check (rare)
         def _param_sanity():
@@ -1285,6 +1327,13 @@ class AgentDQN:
             epoch_max_qs,
             epoch_time,
         )
+        
+        if self.lr_scheduler is not None:
+            try:
+                lr_now = self.optimizer.param_groups[0]["lr"]
+                self.logger.info(f"[LR] end-of-epoch lr={lr_now:.6g}")
+            except Exception:
+                pass
 
         return epoch_stats
 
@@ -1471,14 +1520,15 @@ class AgentDQN:
                     self.policy_model_update_counter += 1
                     policy_trained_times += 1
 
-                # Disabled target model update because we do soft updates
-                # if (
-                #     self.policy_model_update_counter > 0
-                #     and self.policy_model_update_counter % self.target_model_update_freq
-                #     == 0
-                # ):
-                #     self.target_model.load_state_dict(self.policy_model.state_dict())
-                #     target_trained_times += 1
+                if self.use_hard_target_updates:
+                    if (
+                        self.policy_model_update_counter > 0
+                        and (self.policy_model_update_counter % self.hard_target_update_every) == 0
+                    ):
+                        self.target_model.load_state_dict(self.policy_model.state_dict())
+                        target_trained_times += 1
+                        if self._should_log():
+                            self.logger.info(f"[HARD-TGT] Synced target at policy_update={self.policy_model_update_counter}")
 
             self.current_episode_reward += reward
             self.current_episode_discounted_reward += self.discount_factor * reward
