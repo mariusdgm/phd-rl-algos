@@ -29,7 +29,7 @@ class EnvironmentFactory:
             "seed": 42,
         }
 
-        self.use_centrality_resistance = False
+        self.use_centrality_resistance = True
         self.validation_versions = [0, 1, 2]
 
     def get_randomized_env(self, seed: int = None):
@@ -70,7 +70,7 @@ class EnvironmentFactory:
         self,
         env: NetworkGraph,
         low: float = 0.0,  # M (assigned to lowest centrality)
-        high: float = 0.9,  # N (assigned to highest centrality)
+        high: float = 0.5,  # N (assigned to highest centrality)
     ) -> NetworkGraph:
         """
         Linearly maps node centralities to control_resistance in [low, high].

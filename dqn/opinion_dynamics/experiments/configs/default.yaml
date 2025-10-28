@@ -1,6 +1,6 @@
 experiment: "opinion_agent_dqn"
 
-epochs_to_train: 35
+epochs_to_train: 40
 environment: [opinion_net]
 
 agent_params:
@@ -29,12 +29,18 @@ agent_params:
     epsilon:
       start: 1.0
       end: 0.05
-      decay: 2_500_000
+      decay: 2_000_000
+
+    # lr_scheduler:
+    #   name: cosine
+    #   T_max: 2_000_000   # e.g., one long cycle over your steps
+    #   eta_min: 5e-6   # floor
 
     lr_scheduler:
-      name: cosine
-      T_max: 2_500_000   # e.g., one long cycle over your steps
-      eta_min: 5e-6   # floor
+      name: cosine_wr      # enables CosineAnnealingWarmRestarts
+      T_0: 300_000          # optimizer steps per first cycle  ≈ 1.2M frames at training_freq=4
+      T_mult: 2            # cycle grows: 300k, 600k, 1.2M, ...
+      eta_min: 5e-6        # LR floor at the bottom of each cosine
 
 estimator:
   model: OpinionNet

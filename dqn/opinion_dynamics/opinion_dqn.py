@@ -184,11 +184,12 @@ class AgentDQN:
         self.training_stats = []
         self.validation_stats = []
 
+        self._init_early_stopping_vars()
+        
         # check that all paths were provided and that the files can be found
         if resume_training_path:
             self.load_training_state(resume_training_path)
 
-        self._init_early_stopping_vars()
 
     def _should_log(self):
         return (self.t % self.log_stride) == 0 and self.t > 0
@@ -616,6 +617,14 @@ class AgentDQN:
                         self.optimizer, T_max=T_max, eta_min=eta_min
                     )
                     self.logger.info(f"[CFG] LR scheduler: CosineAnnealingLR(T_max={T_max}, eta_min={eta_min})")
+                elif name in ("cosine_wr", "cosinewarmrestarts", "cosine_awr"):
+                    T_0 = int(self._lr_sched_cfg.get("T_0", 300_000))
+                    T_mult = int(self._lr_sched_cfg.get("T_mult", 2))
+                    eta_min = float(self._lr_sched_cfg.get("eta_min", 0.0))
+                    self.lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                        self.optimizer, T_0=T_0, T_mult=T_mult, eta_min=eta_min
+                    )
+                    self.logger.info(f"[CFG] LR scheduler: CosineAnnealingWarmRestarts(T_0={T_0}, T_mult={T_mult}, eta_min={eta_min})")
                 else:
                     self.logger.warning(f"[CFG] Unknown lr_scheduler name={name}; scheduler disabled.")
             except Exception as e:
@@ -745,6 +754,20 @@ class AgentDQN:
         self.target_model.eval()
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
+        try:
+            sched_state = checkpoint.get("lr_scheduler_state_dict", None)
+            if (self.lr_scheduler is not None) and (sched_state is not None):
+                self.lr_scheduler.load_state_dict(sched_state)
+                # Optional: log where we are in the cycle
+                lr_now = self.optimizer.param_groups[0]["lr"]
+                self.logger.info(f"[RESUME] Restored LR scheduler state; current lr={lr_now:.6g}")
+            else:
+                if self.lr_scheduler is not None:
+                    self.logger.info("[RESUME] No scheduler state in checkpoint; scheduler continues from init.")
+                # else: no scheduler configured → nothing to restore
+        except Exception as e:
+            self.logger.warning(f"[RESUME] Failed to load scheduler state: {e}")
+        
     def load_training_stats(self, training_stats_file):
         checkpoint = torch.load(
             training_stats_file, map_location=device, weights_only=False
@@ -757,6 +780,8 @@ class AgentDQN:
         self.training_stats = checkpoint["training_stats"]
         self.validation_stats = checkpoint["validation_stats"]
 
+        self._unpack_es_state(checkpoint.get("es_state", None))
+        
     def save_checkpoint(self):
         if not (self.experiment_output_folder and self.experiment_name):
             self.logger.warning("Skipping checkpoint: missing experiment paths.")
@@ -778,6 +803,7 @@ class AgentDQN:
                 "policy_model_state_dict": self.policy_model.state_dict(),
                 "target_model_state_dict": self.target_model.state_dict(),
                 "optimizer_state_dict": self.optimizer.state_dict(),
+                "lr_scheduler_state_dict": (self.lr_scheduler.state_dict() if self.lr_scheduler is not None else None),
             },
             model_file,
         )
@@ -790,6 +816,7 @@ class AgentDQN:
             "policy_model_update_counter": self.policy_model_update_counter,
             "training_stats": self.training_stats,
             "validation_stats": self.validation_stats,
+            "es_state": self._pack_es_state(),
         }
 
         torch.save(
@@ -799,6 +826,44 @@ class AgentDQN:
 
         self.logger.debug(f"Training status saved at t = {self.t}")
 
+    def _pack_es_state(self) -> dict:
+        """Serialize logging/early-stop internals for checkpoint."""
+        return {
+            "win": {k: list(v) for k, v in self._es_win.items()},           # deques → lists
+            "cfg": dict(self._es_cfg),                                       # thresholds (if you tweak later)
+            "H_uniform": self._H_uniform,
+            "last_entropy": self._last_entropy,
+            "last_frac_over_cap": self._last_frac_over_cap,
+            "last_rel_target_drift": self._last_rel_target_drift,
+            "nonfinite_counter": self._nonfinite_counter,
+            "tgt_clip_ema": self._tgt_clip_ema,
+            "tgt_clip_alpha": self._tgt_clip_alpha,
+            "validation_env_counters": dict(self.validation_env_counters),   # which val. version to pick next
+        }
+        
+    def _unpack_es_state(self, es: dict | None) -> None:
+        """Restore logging/early-stop internals from checkpoint."""
+        if not es:
+            return
+        # Rebuild rolling windows with a consistent maxlen (keep your W=10)
+        W = 10
+        win = es.get("win", {})
+        self._es_win = {k: deque(win.get(k, []), maxlen=W) for k in ("H","frac_cap","td_p95","clamp_pct","tgt_drift","max_q")}
+        # Restore thresholds/baselines
+        self._es_cfg.update(es.get("cfg", {}))
+        self._H_uniform = es.get("H_uniform", self._H_uniform)
+        # Restore last logged values
+        self._last_entropy = es.get("last_entropy", None)
+        self._last_frac_over_cap = es.get("last_frac_over_cap", None)
+        self._last_rel_target_drift = es.get("last_rel_target_drift", None)
+        # Restore counters/ema
+        self._nonfinite_counter = es.get("nonfinite_counter", 0)
+        self._tgt_clip_ema = es.get("tgt_clip_ema", None)
+        self._tgt_clip_alpha = es.get("tgt_clip_alpha", self._tgt_clip_alpha)
+        # Validation version usage so we keep cycling evenly
+        if "validation_env_counters" in es:
+            self.validation_env_counters = defaultdict(int, es["validation_env_counters"])
+        
     def select_action(
         self,
         state: torch.Tensor,
