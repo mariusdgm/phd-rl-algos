@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 import numpy as np
+import math
 
 
 def interpolate_opinion_trajectory(env, opinions_over_time, actions, n_substeps=10):
@@ -47,20 +48,21 @@ def interpolate_opinion_trajectory(env, opinions_over_time, actions, n_substeps=
     return np.array(interpolated), np.array(times)
 
 
-def plot_action_heatmap(actions, step_labels=None):
+def plot_action_heatmap(actions, step_labels=None, target_xticks=12):
     """
     Plot a heatmap of actions over time, with agents on the Y-axis.
+    X-axis shows standardized intervals (…, 0–5–10–… or 0–10–20–…).
 
     Args:
-        actions (List[np.ndarray] or np.ndarray): Actions over time, shape (T, N).
-        step_labels (List[str] or None): Optional labels for the time steps (X-axis).
+        actions (array-like): shape (T, N)
+        step_labels (list[str] or None): optional custom labels per step (length T)
+        target_xticks (int): target maximum number of visible x ticks
     """
-    actions = np.array(actions)  # Ensure it's a NumPy array
+    actions = np.asarray(actions)
     T, N = actions.shape
 
-    # Transpose to plot agents on Y-axis
-    data = actions.T  # Now shape is (N, T)
-
+    # Heatmap data: agents on Y
+    data = actions.T  # (N, T)
     x_edges = np.arange(T + 1)
     y_edges = np.arange(N + 1)
 
@@ -70,14 +72,41 @@ def plot_action_heatmap(actions, step_labels=None):
     cbar = plt.colorbar(mesh, ax=ax)
     cbar.set_label("Control Magnitude")
 
-    # Time steps (X-axis)
-    if step_labels is None:
-        step_labels = [str(i) for i in range(T)]
-    ax.set_xticks(np.arange(T) + 0.5)
-    ax.set_xticklabels(step_labels, rotation=0)
-    ax.set_xlabel("Time Step")
+    # ---------- standardized x ticks (nice steps: 1, 2, 5 × 10^k) ----------
+    if T > 1:
+        # desired raw step in indices
+        raw = max(1, int(math.ceil(T / max(3, target_xticks))))
+        k = int(math.floor(math.log10(raw)))
+        base = 10**k
+        for m in (1, 2, 5, 10):
+            step = m * base
+            if step >= raw:
+                break
+        tick_idx = np.arange(0, T, step, dtype=int)
+        # ensure we include the last index if far from the last tick
+        if (
+            len(tick_idx) == 0
+            or tick_idx[-1] < T - 1
+            and (T - 1) - tick_idx[-1] >= step // 2
+        ):
+            tick_idx = np.append(tick_idx, T - 1)
+    else:
+        tick_idx = np.array([0], dtype=int)
 
-    # Agent labels (Y-axis)
+    # Build labels: numeric indices or provided step_labels
+    if step_labels is None:
+        xtick_labels = [str(i) for i in tick_idx]
+    else:
+        # clamp in case user passed fewer/more labels
+        xtick_labels = [str(step_labels[i]) for i in tick_idx]
+
+    # ticks at cell centers -> +0.5
+    ax.set_xticks(tick_idx + 0.5)
+    ax.set_xticklabels(xtick_labels)
+    ax.set_xlabel("Time Step")
+    ax.set_xlim(0, T)
+
+    # Y-axis (agents) at cell centers
     agent_labels = [f"N{i}" for i in range(N)]
     ax.set_yticks(np.arange(N) + 0.5)
     ax.set_yticklabels(agent_labels)
@@ -85,6 +114,9 @@ def plot_action_heatmap(actions, step_labels=None):
 
     ax.set_title("Control Actions Heatmap (Agents on Y-axis)")
     ax.grid(visible=True, axis="y", color="white", linestyle="--", linewidth=0.5)
+
+    # If labels still feel tight, uncomment:
+    # plt.setp(ax.get_xticklabels(), fontsize=9)
 
     plt.tight_layout()
     plt.show()
@@ -247,7 +279,9 @@ def plot_opinions_over_time(opinions_over_time, time_points=None, title=None):
 
     plt.figure(figsize=(12, 6))
     for agent_idx in range(num_agents):
-        plt.plot(time_points, opinions_over_time[:, agent_idx], label=f"Agent {agent_idx}")
+        plt.plot(
+            time_points, opinions_over_time[:, agent_idx], label=f"Agent {agent_idx}"
+        )
 
     plt.xlabel("Time" if time_points is not None else "Time Steps")
     plt.ylabel("Opinion")
