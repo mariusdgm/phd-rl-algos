@@ -23,13 +23,13 @@ class EnvironmentFactory:
             "normalize_reward": True,
             "use_delta_shaping": True,
             "delta_lambda": 0.1,
-            "terminal_reward": 0.5,
-            "terminate_when_converged": False,
-            "dynamics_model": "coca",  # or "laplacian"
+            "terminal_reward": 0.0,
+            "terminate_when_converged": True,
+            "dynamics_model": "laplacian",  # or "laplacian"
             "seed": 15,
         }
 
-        self.use_centrality_resistance = True
+        self.use_centrality_resistance = False
         self.validation_versions = [0, 1, 2]
 
     def get_randomized_env(self, seed: int = None):
