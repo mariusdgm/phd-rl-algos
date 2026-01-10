@@ -1,7 +1,7 @@
 ```mermaid
 flowchart LR
   X["x (B, N)"]
-  FC["Feature Extractor
+  FC["MLP
   Linear(128) → ReLU
   Linear(128→128) → ReLU"]
   Head["Heads
