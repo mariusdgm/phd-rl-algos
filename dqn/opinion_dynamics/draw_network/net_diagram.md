@@ -5,9 +5,9 @@ flowchart LR
   Linear(128) → ReLU
   Linear(128→128) → ReLU"]
   Head["Heads
-  A_diag (B, J, N)
-  b (B, J, N)
-  c (B, J)"]
+  A_diag (B, L, N)
+  b (B, L, N)
+  c (B, L)"]
 
   X --> FC --> Head
 ```
