@@ -48,20 +48,10 @@ def interpolate_opinion_trajectory(env, opinions_over_time, actions, n_substeps=
     return np.array(interpolated), np.array(times)
 
 
-def plot_action_heatmap(actions, step_labels=None, target_xticks=12):
-    """
-    Plot a heatmap of actions over time, with agents on the Y-axis.
-    X-axis shows standardized intervals (…, 0–5–10–… or 0–10–20–…).
-
-    Args:
-        actions (array-like): shape (T, N)
-        step_labels (list[str] or None): optional custom labels per step (length T)
-        target_xticks (int): target maximum number of visible x ticks
-    """
+def plot_action_heatmap(actions, step_labels=None, target_xticks=12, *, show=True):
     actions = np.asarray(actions)
     T, N = actions.shape
 
-    # Heatmap data: agents on Y
     data = actions.T  # (N, T)
     x_edges = np.arange(T + 1)
     y_edges = np.arange(N + 1)
@@ -69,12 +59,11 @@ def plot_action_heatmap(actions, step_labels=None, target_xticks=12):
     fig, ax = plt.subplots(figsize=(12, 6))
     mesh = ax.pcolormesh(x_edges, y_edges, data, cmap="viridis", shading="auto")
 
-    cbar = plt.colorbar(mesh, ax=ax)
+    cbar = fig.colorbar(mesh, ax=ax)
     cbar.set_label("Control Magnitude")
 
     # ---------- standardized x ticks (nice steps: 1, 2, 5 × 10^k) ----------
     if T > 1:
-        # desired raw step in indices
         raw = max(1, int(math.ceil(T / max(3, target_xticks))))
         k = int(math.floor(math.log10(raw)))
         base = 10**k
@@ -83,43 +72,35 @@ def plot_action_heatmap(actions, step_labels=None, target_xticks=12):
             if step >= raw:
                 break
         tick_idx = np.arange(0, T, step, dtype=int)
-        # ensure we include the last index if far from the last tick
-        if (
-            len(tick_idx) == 0
-            or tick_idx[-1] < T - 1
-            and (T - 1) - tick_idx[-1] >= step // 2
-        ):
+        if len(tick_idx) == 0 or (tick_idx[-1] < T - 1 and (T - 1) - tick_idx[-1] >= step // 2):
             tick_idx = np.append(tick_idx, T - 1)
     else:
         tick_idx = np.array([0], dtype=int)
 
-    # Build labels: numeric indices or provided step_labels
     if step_labels is None:
         xtick_labels = [str(i) for i in tick_idx]
     else:
-        # clamp in case user passed fewer/more labels
         xtick_labels = [str(step_labels[i]) for i in tick_idx]
 
-    # ticks at cell centers -> +0.5
     ax.set_xticks(tick_idx + 0.5)
     ax.set_xticklabels(xtick_labels)
     ax.set_xlabel("Time Step")
     ax.set_xlim(0, T)
 
-    # Y-axis (agents) at cell centers
     agent_labels = [f"N{i}" for i in range(N)]
     ax.set_yticks(np.arange(N) + 0.5)
     ax.set_yticklabels(agent_labels)
     ax.set_ylabel("Nodes")
 
-    ax.set_title("Control Actions Heatmap (Agents on Y-axis)")
+    ax.set_title("Control Actions Heatmap")
     ax.grid(visible=True, axis="y", color="white", linestyle="--", linewidth=0.5)
 
-    # If labels still feel tight, uncomment:
-    # plt.setp(ax.get_xticklabels(), fontsize=9)
+    fig.tight_layout()
 
-    plt.tight_layout()
-    plt.show()
+    if show:
+        plt.show()
+
+    return fig, ax
 
 
 def plot_campaign_budgets(optimal_budget_allocation, nodes_controlled, control_inputs):
@@ -262,33 +243,29 @@ def plot_campaign_budgets_with_order(optimal_budget_allocation, order, order0, u
     plt.show()
 
 
-def plot_opinions_over_time(opinions_over_time, time_points=None, title=None):
-    """
-    Plot the opinions of each agent over time.
-
-    Args:
-        opinions_over_time (np.ndarray): Array of shape (num_steps, num_agents) containing the opinions at each time step.
-        time_points (np.ndarray, optional): Array of time points corresponding to each sample.
-                                            If None, time steps are used as the x-axis.
-        title (str, optional): Custom title for the plot. Defaults to "Opinion Convergence Over Time".
-    """
+def plot_opinions_over_time(opinions_over_time, time_points=None, title=None, *, show=True):
+    opinions_over_time = np.asarray(opinions_over_time)
     num_agents = opinions_over_time.shape[1]
 
     if time_points is None:
         time_points = np.arange(opinions_over_time.shape[0])
 
-    plt.figure(figsize=(12, 6))
+    fig, ax = plt.subplots(figsize=(12, 6))
     for agent_idx in range(num_agents):
-        plt.plot(
-            time_points, opinions_over_time[:, agent_idx], label=f"Agent {agent_idx}"
-        )
+        ax.plot(time_points, opinions_over_time[:, agent_idx], label=f"Agent {agent_idx}")
 
-    plt.xlabel("Time" if time_points is not None else "Time Steps")
-    plt.ylabel("Opinion")
-    plt.title(title if title is not None else "Opinion Convergence Over Time")
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
+    ax.set_xlabel("Time" if time_points is not None else "Time Steps")
+    ax.set_ylabel("Opinion")
+    if title is not None:
+        ax.set_title(title)
+
+    ax.grid(True)
+    fig.tight_layout()
+
+    if show:
+        plt.show()
+
+    return fig, ax
 
 
 def plot_budget_distribution(budget_distribution, affected_nodes):
